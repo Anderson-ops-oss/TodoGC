@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import timedelta
+from enum import Enum
 
 from todogc.collector import Candidate, GCResult, Reason
 from todogc.heap import TENURING_THRESHOLD, Generation, Task
@@ -161,6 +163,140 @@ _GEN_ORDER: tuple[tuple[Generation, str, str], ...] = (
 )
 
 
+class RowKind(str, Enum):
+    """堆图里一行对象的标记类别；决定前缀符号与配色，文本堆图与 Web 端共用。"""
+
+    ROOT = "root"      # 活跃目标(GC root)，标 ★
+    META = "meta"      # 常驻 Metaspace 的元任务，标 ⊛
+    ZOMBIE = "zombie"  # 回收候选(僵尸)，标 ☠、标红
+    NORMAL = "normal"  # 普通存活对象，无标记
+
+
+# RowKind → 文本堆图里的前缀符号。
+_ROW_MARKER: dict[RowKind, str] = {
+    RowKind.ROOT: "★",
+    RowKind.META: "⊛",
+    RowKind.ZOMBIE: "☠",
+    RowKind.NORMAL: " ",
+}
+
+
+@dataclass
+class HeapRow:
+    """堆图里的一行：一个堆对象 + 它的标记类别 + (若是候选)对应的回收候选。
+
+    Attributes:
+        task (Task): 该行对应的堆对象。
+        kind (RowKind): 标记类别(root / meta / zombie / normal)。
+        candidate (Candidate | None): 若该对象是回收候选则为对应 Candidate，否则 None。
+    """
+
+    task: Task
+    kind: RowKind
+    candidate: Candidate | None
+
+
+@dataclass
+class HeapSection:
+    """堆图里的一个分代分区：分代 + 中英文名 + 该代下的对象行(按 id 升序)。
+
+    Attributes:
+        gen (Generation): 分代。
+        name_en (str): 英文代名(如 "Eden")。
+        name_cn (str): 中文代名(如 "新生代")。
+        rows (list[HeapRow]): 该代下的对象行，已按 id 升序排列。
+    """
+
+    gen: Generation
+    name_en: str
+    name_cn: str
+    rows: list[HeapRow]
+
+
+def _row_kind(task: Task, roots: set[int], is_candidate: bool) -> RowKind:
+    """按优先级判定一行的标记类别：root(★) > 元任务(⊛) > 僵尸(☠) > 普通(空格)。
+
+    root 与元任务恒为存活、绝不会出现在候选里，故三者互斥、优先级安全。
+
+    Args:
+        task (Task): 待判定的任务。
+        roots (set[int]): 活跃 root 的 id 集合。
+        is_candidate (bool): 该任务是否为本轮回收候选。
+
+    Returns:
+        RowKind: 对应的标记类别。
+    """
+    if task.id in roots:
+        return RowKind.ROOT
+    if task.is_meta:
+        return RowKind.META
+    if is_candidate:
+        return RowKind.ZOMBIE
+    return RowKind.NORMAL
+
+
+def heap_view(result: GCResult, roots: set[int]) -> list[HeapSection]:
+    """把一次 GC 结果整理成分代分区的结构化堆视图(文本堆图与 Web 端共用的单一数据源)。
+
+    survivors + candidates 即堆上全部对象；按 _GEN_ORDER 分代归组、每代内按 id 升序，
+    并为每行判定标记类别与(若是候选的)Candidate。已回收对象在垃圾桶、不在堆上，不出现。
+
+    Args:
+        result (GCResult): 一次 GC 的结果。
+        roots (set[int]): 活跃 root 的 id 集合(用于判定 ★)。
+
+    Returns:
+        list[HeapSection]: 按 Eden → Survivor → Old → Metaspace 排序的分区列表；
+            每个分区含该代下按 id 升序的 HeapRow。
+    """
+    cand_of = {c.task.id: c for c in result.candidates}
+    tasks = list(result.survivors) + [c.task for c in result.candidates]
+    by_gen: dict[Generation, list[Task]] = {gen: [] for gen, _, _ in _GEN_ORDER}
+    for t in tasks:
+        by_gen.setdefault(t.gen, []).append(t)
+
+    sections: list[HeapSection] = []
+    for gen, en, cn in _GEN_ORDER:
+        items = sorted(by_gen.get(gen, []), key=lambda t: t.id or 0)
+        rows = [
+            HeapRow(task=t, kind=_row_kind(t, roots, t.id in cand_of), candidate=cand_of.get(t.id))
+            for t in items
+        ]
+        sections.append(HeapSection(gen=gen, name_en=en, name_cn=cn, rows=rows))
+    return sections
+
+
+def heap_used_count(result: GCResult) -> int:
+    """统计计入 -Xmx 的堆对象数(排除 Metaspace 元任务，与 store.heap_size 同口径)。
+
+    Args:
+        result (GCResult): 一次 GC 的结果；survivors + candidates 即堆上全部对象。
+
+    Returns:
+        int: 非 Metaspace 的堆对象总数。
+    """
+    tasks = list(result.survivors) + [c.task for c in result.candidates]
+    return sum(1 for t in tasks if t.gen is not Generation.META)
+
+
+def candidate_note(cand: Candidate) -> str:
+    """把一个回收候选的判死原因浓缩成一句短注解(文本堆图加括号、Web 端做徽章，共用此源)。
+
+    Args:
+        cand (Candidate): 回收候选。
+
+    Returns:
+        str: 形如 "cycle #0" / "unreachable" / "stale · 推进3 推迟2" / "stale" 的短文本。
+    """
+    if cand.reason is Reason.CYCLE:
+        return f"cycle #{cand.cycle_id}"
+    if cand.reason is Reason.UNREACHABLE:
+        return "unreachable"
+    if cand.metrics is not None:
+        return f"stale · 推进{cand.metrics.refcount_30d} 推迟{cand.metrics.skip_count}"
+    return "stale"
+
+
 def _fill_bar(used: int, cap: int, *, width: int = 20) -> str:
     """把堆占用画成定宽的 [██░░] 填充条。
 
@@ -179,41 +315,20 @@ def _fill_bar(used: int, cap: int, *, width: int = 20) -> str:
     return "[" + "█" * filled + "░" * (width - filled) + "]"
 
 
-def _heap_row(task: Task, roots: set[int], cand_of: dict[int, Candidate]) -> str:
-    """渲染堆图里的一行对象：前缀标记 + #id 标题 + 判死注解。
+def _heap_row_text(row: HeapRow) -> str:
+    """把一个 HeapRow 渲染成文本堆图里的一行：前缀标记 + #id 标题 + 判死注解。
 
-    标记优先级：root(★) > 元任务(⊛) > 回收候选/僵尸(☠) > 普通存活(空格)。
-    root 与元任务恒为存活、绝不会出现在候选里，故三者互斥、优先级安全。
+    标记与候选信息已在 heap_view 里判定，这里只负责文本呈现。
 
     Args:
-        task (Task): 待渲染的任务。
-        roots (set[int]): 活跃 root 的 id 集合。
-        cand_of (dict[int, Candidate]): id → 回收候选的映射(非候选者不在其中)。
+        row (HeapRow): 待渲染的堆图行。
 
     Returns:
         str: 形如 "  │   ☠ #3 学 Rust  (cycle #0)" 的单行文本(含左侧竖线导轨)。
     """
-    cand = cand_of.get(task.id)
-    if task.id in roots:
-        marker = "★"
-    elif task.is_meta:
-        marker = "⊛"
-    elif cand is not None:
-        marker = "☠"
-    else:
-        marker = " "
-
-    annot = ""
-    if cand is not None:
-        if cand.reason is Reason.CYCLE:
-            annot = f"  (cycle #{cand.cycle_id})"
-        elif cand.reason is Reason.UNREACHABLE:
-            annot = "  (unreachable)"
-        elif cand.metrics is not None:
-            annot = f"  (stale · 推进{cand.metrics.refcount_30d} 推迟{cand.metrics.skip_count})"
-        else:
-            annot = "  (stale)"
-    return f"  │   {marker} #{task.id} {task.title}{annot}"
+    marker = _ROW_MARKER[row.kind]
+    annot = f"  ({candidate_note(row.candidate)})" if row.candidate is not None else ""
+    return f"  │   {marker} #{row.task.id} {row.task.title}{annot}"
 
 
 def format_heap_map(result: GCResult, roots: set[int], *, heap_max: int | None = None) -> str:
@@ -231,13 +346,7 @@ def format_heap_map(result: GCResult, roots: set[int], *, heap_max: int | None =
     Returns:
         str: 多行堆内存图文本。
     """
-    cand_of = {c.task.id: c for c in result.candidates}
-    tasks = list(result.survivors) + [c.task for c in result.candidates]
-    by_gen: dict[Generation, list[Task]] = {gen: [] for gen, _, _ in _GEN_ORDER}
-    for t in tasks:
-        by_gen.setdefault(t.gen, []).append(t)
-    used = sum(1 for t in tasks if t.gen is not Generation.META)
-
+    used = heap_used_count(result)
     if heap_max is not None:
         pct = round(100 * used / heap_max, 1) if heap_max > 0 else 0.0
         usage = (
@@ -248,12 +357,11 @@ def format_heap_map(result: GCResult, roots: set[int], *, heap_max: int | None =
         usage = f"  堆对象: {used} 个(未设 -Xmx)   (Metaspace 不计)"
 
     lines = ["━━ 堆内存快照 · jmap -heap ━━━━━━━━━━━━━━━━", usage, ""]
-    for i, (gen, en, cn) in enumerate(_GEN_ORDER):
+    for i, section in enumerate(heap_view(result, roots)):
         conn = "┌" if i == 0 else "├"
-        items = sorted(by_gen.get(gen, []), key=lambda t: t.id or 0)
-        lines.append(f"  {conn} {en} · {cn} ({len(items)})")
-        if items:
-            lines.extend(_heap_row(t, roots, cand_of) for t in items)
+        lines.append(f"  {conn} {section.name_en} · {section.name_cn} ({len(section.rows)})")
+        if section.rows:
+            lines.extend(_heap_row_text(r) for r in section.rows)
         else:
             lines.append("  │   (空)")
     lines.append("  └" + "─" * 14)

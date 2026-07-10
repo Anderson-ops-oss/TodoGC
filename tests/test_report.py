@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from todogc import report
-from todogc.collector import Collector
+from todogc.collector import Collector, Reason
 from todogc.heap import Generation
 
 
@@ -89,3 +89,58 @@ def test_heap_map(store, now):
 
     plain = report.format_heap_map(res, store.root_ids())  # 不给 -Xmx 的变体
     assert "堆对象: 6 个" in plain and "未设 -Xmx" in plain
+
+
+def test_heap_view(store, now):
+    """heap_view 结构化视图：分区顺序/命名、每行 kind 与 candidate、id 升序、used 计数、candidate_note。"""
+    goal = store.add_task("G", is_root=True, ts=now)
+    live = store.add_task("A", root_id=goal.id, ts=now)  # 刚建、可达 → 存活普通
+    s = store.add_task("S", root_id=goal.id, ts=now - timedelta(days=40))  # 可达但陈旧
+    orphan = store.add_task("orphan", ts=now - timedelta(days=40))  # 不可达
+    a = store.add_task("学 Rust", ts=now - timedelta(days=40))
+    b = store.add_task("重写博客", ts=now - timedelta(days=40))
+    store.add_dep(a.id, b.id)
+    store.add_dep(b.id, a.id)  # 环
+    meta = store.add_task("变得更自律", meta=True, ts=now)
+    res = Collector().run_on_store(store, store.root_ids(), extra_edges=store.deps(), now=now)
+
+    sections = report.heap_view(res, store.root_ids())
+
+    # 分区顺序与中英文名固定：Eden → Survivor → Old → Metaspace
+    assert [(s_.gen, s_.name_en, s_.name_cn) for s_ in sections] == [
+        (Generation.EDEN, "Eden", "新生代"),
+        (Generation.SURVIVOR, "Survivor", "幸存区"),
+        (Generation.OLD, "Old", "老年代"),
+        (Generation.META, "Metaspace", "元空间"),
+    ]
+    by_gen = {s_.gen: s_ for s_ in sections}
+
+    # 空代 → 空 rows
+    assert by_gen[Generation.SURVIVOR].rows == [] and by_gen[Generation.OLD].rows == []
+
+    # Eden 内按 id 升序
+    eden = by_gen[Generation.EDEN].rows
+    assert [r.task.id for r in eden] == sorted(r.task.id for r in eden)
+
+    # 逐行断言标记类别与候选
+    row = {r.task.id: r for r in eden}
+    assert row[goal.id].kind is report.RowKind.ROOT and row[goal.id].candidate is None
+    assert row[live.id].kind is report.RowKind.NORMAL and row[live.id].candidate is None
+    assert row[s.id].kind is report.RowKind.ZOMBIE and row[s.id].candidate.reason is Reason.STALE
+    assert row[orphan.id].candidate.reason is Reason.UNREACHABLE
+    assert row[a.id].kind is report.RowKind.ZOMBIE
+    assert row[a.id].candidate.reason is Reason.CYCLE and row[a.id].candidate.cycle_id == 0
+
+    # meta 落 Metaspace，kind=META、非候选
+    meta_rows = by_gen[Generation.META].rows
+    assert len(meta_rows) == 1
+    assert meta_rows[0].task.id == meta.id
+    assert meta_rows[0].kind is report.RowKind.META and meta_rows[0].candidate is None
+
+    # used 计数排除 meta：goal/A/S/orphan/学/重写 = 6
+    assert report.heap_used_count(res) == 6
+
+    # candidate_note 三种原因的短注解(与文本堆图括号内容同源)
+    assert report.candidate_note(row[a.id].candidate) == "cycle #0"
+    assert report.candidate_note(row[orphan.id].candidate) == "unreachable"
+    assert report.candidate_note(row[s.id].candidate) == "stale · 推进0 推迟0"

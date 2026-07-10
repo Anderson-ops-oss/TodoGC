@@ -4,7 +4,7 @@
 > ……说人话：它把你的待办清单当成程序的堆内存，用垃圾回收算法冷酷地识别并回收那些"你其实这辈子都不会做"的僵尸任务。
 
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-27%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-28%20passing-brightgreen)
 ![deps](https://img.shields.io/badge/dependencies-0-success)
 ![人生覆盖率](https://img.shields.io/badge/%E4%BA%BA%E7%94%9F%E8%A6%86%E7%9B%96%E7%8E%87-12%25-red)
 ![GC throughput](https://img.shields.io/badge/GC%20throughput-98%25-success)
@@ -33,9 +33,10 @@
 ```bash
 pip install -e .            # 开发模式；装完 `todogc` 就是一条真命令
 pip install -e ".[color]"   # 想要彩色输出(rich 表格 + GC 日志高亮)就带上 color
+pip install -e ".[web]"     # 想要 Web 端(Streamlit 堆内存图 + add/gc/restore 交互)就带上 web
 ```
 
-核心**零运行时依赖**，只用标准库；`rich` 是可选增强，没装就自动回退纯文本。需要 Python 3.10+。
+核心**零运行时依赖**，只用标准库；`rich`(彩色)与 `streamlit`(Web 端)都是可选增强——没装 rich 自动回退纯文本，没装 streamlit 也不影响 CLI 与测试。需要 Python 3.10+。
 
 ## 用法
 
@@ -51,6 +52,7 @@ todogc dep 4 3                               # #4 的理由是 #3 —— 成环
 
 todogc ls                                    # 看看你的堆
 todogc heap                                  # 堆内存图：分代分布 + -Xmx 占用 + 僵尸标红(别名 jmap)
+todogc web                                   # 把这张堆图搬进浏览器 + 交互(需 [web]，见下)
 todogc gc                                    # 触发回收 + Stop-the-world 仪式
 todogc gc --dry-run                          # 只出报告，不进仪式
 todogc graveyard                             # 悼词墙：看看你都埋了什么
@@ -96,6 +98,21 @@ todogc restore 3                             # 手滑了？从垃圾桶捞回来
 
 装了 `rich` 时：僵尸行整行标红、`★` root 描金、`-Xmx` 占用条上色；`jmap` 是它的别名（致敬 JDK 那个真的会打印堆内存图的命令）。
 
+### Web 端（Streamlit）长这样
+
+```bash
+pip install -e ".[web]"
+todogc web                 # 起本地服务、浏览器打开(--port 改端口)
+```
+
+同一套内核、同一张堆图，只是从终端搬进浏览器：
+
+- **-Xmx 占用条** + 四代卡片（Eden / Survivor / Old / Metaspace）：僵尸行**标红**、`★` root 描金、`⊛` 元任务品红——配色语义与 CLI 一致
+- **Stop-the-world 仪式** 直接在页面点：逐个僵尸选「复活 / 回收 / 跳过」、填 `finalize()` 遗言，一键执行——走的还是 CLI 那套 `run_ceremony`（`finalize` 只调一次、复活会晋升分代）
+- 侧栏 **add**（含 -Xmx 满则 Allocation Failure 拒绝分配）、**墓园**一键 `restore`
+
+Web 端是可选的：没装 `streamlit`，`todogc web` 只会友好提示去装，绝不影响其它命令；浏览器里的自动刷新不算「查看」（不虚增 view 埋点）。
+
 ## 判活规则
 
 一个任务判为**存活**，当且仅当：
@@ -115,8 +132,9 @@ todogc/
   heap.py       领域模型(Task / Touch / 分代枚举)
   store.py      SQLite 持久化 + 自动埋点 + 判活指标
   collector.py  可达性标记 + Tarjan 抓环 + 判活清除
-  report.py     JVM 风格 GC 日志 + 堆内存图 + 候选清单 + 打脸文案
+  report.py     JVM 风格 GC 日志 + 堆内存图(heap_view 视图模型，CLI/Web 共用) + 候选 + 打脸
   cli.py        命令行 + Stop-the-world 回收仪式
+  webapp.py     Streamlit Web 端(堆内存图 + add/gc/restore 交互，可选)
 ```
 
 ## 测试
@@ -126,9 +144,21 @@ pip install -e ".[dev]"
 pytest
 ```
 
+## 打包
+
+核心零依赖，打成标准 wheel / sdist 直接分发（`build` 已含在 `[dev]` 里）：
+
+```bash
+pip install -e ".[dev]"
+python -m build          # 产出 dist/todogc-0.1.0-py3-none-any.whl 与 .tar.gz
+pip install dist/todogc-0.1.0-py3-none-any.whl   # 到哪都能装
+```
+
+`dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。
+
 ## 状态与路线图
 
-**已实现**：全部 MVP（录入 / 触碰追踪 / 可达性 + 循环引用 / 回收仪式 / 垃圾桶恢复）、JVM 风格 GC 日志、`finalize()` 遗言（含"只能复活一次"）、分代打脸、Metaspace 元任务、`-Xmx` 堆容量约束（`add` 满则触发 Allocation Failure、绝不自动删）、`rich` 彩色输出（可选）、堆内存图（`heap` / `jmap` 分代快照 + -Xmx 占用条 + 僵尸标红）。
+**已实现**：全部 MVP（录入 / 触碰追踪 / 可达性 + 循环引用 / 回收仪式 / 垃圾桶恢复）、JVM 风格 GC 日志、`finalize()` 遗言（含"只能复活一次"）、分代打脸、Metaspace 元任务、`-Xmx` 堆容量约束（`add` 满则触发 Allocation Failure、绝不自动删）、`rich` 彩色输出（可选）、堆内存图（`heap` / `jmap` 分代快照 + -Xmx 占用条 + 僵尸标红）、Web 端（`web`：Streamlit 堆内存图 + add/gc/restore 交互，可选）、标准打包（`python -m build` → wheel / sdist）。
 
 **还没做（欢迎 PR）**：
 

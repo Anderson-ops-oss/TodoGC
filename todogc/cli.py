@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -325,6 +327,38 @@ def cmd_heap(store: Store, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(store: Store, args: argparse.Namespace) -> int:
+    """web：启动 Streamlit Web 端(浏览器里的堆内存图 + add/gc/restore 交互)。
+
+    以子进程运行 `python -m streamlit run webapp.py`，把当前 --db / --heap-max 通过
+    环境变量(TODOGC_DB / TODOGC_HEAP_MAX)透传给 Web 端，确保它和 CLI 用同一个库。
+    未安装 streamlit 时只给安装提示、绝不抛栈。本命令不使用 store(仅需路径参数)，
+    store 由 main() 统一开关，这里忽略。
+
+    Args:
+        store (Store): 数据源(本命令不用，仅为子命令签名统一)。
+        args (argparse.Namespace): 需含 db / heap_max / port。
+
+    Returns:
+        int: streamlit 子进程的退出码；未安装 streamlit 时返回 1。
+    """
+    if importlib.util.find_spec("streamlit") is None:
+        print(
+            "未安装 streamlit —— Web 端是可选功能。\n"
+            '  安装：pip install -e ".[web]"\n'
+            "  再跑：todogc web",
+            file=sys.stderr,
+        )
+        return 1
+    webapp = os.path.join(os.path.dirname(__file__), "webapp.py")
+    env = {**os.environ, "TODOGC_DB": args.db, "TODOGC_HEAP_MAX": str(args.heap_max)}
+    cmd = [sys.executable, "-m", "streamlit", "run", webapp]
+    if args.port is not None:
+        cmd += ["--server.port", str(args.port)]
+    print(f"启动 Web 端(库 {args.db} · -Xmx {args.heap_max}) —— Ctrl-C 停止")
+    return subprocess.run(cmd, env=env).returncode
+
+
 def cmd_graveyard(store: Store, args: argparse.Namespace) -> int:
     """graveyard：悼词墙，列出已回收任务的墓志铭与遗言。
 
@@ -424,6 +458,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("heap", aliases=["jmap"], help="打印分代堆内存图(僵尸标红)")
     p.set_defaults(func=cmd_heap)
+
+    p = sub.add_parser("web", help="启动 Streamlit Web 端(堆内存图 + 交互，需 [web] extra)")
+    p.add_argument("--port", type=int, default=None, help="Web 端端口(默认 streamlit 的 8501)")
+    p.set_defaults(func=cmd_web)
 
     p = sub.add_parser("graveyard", help="悼词墙")
     p.set_defaults(func=cmd_graveyard)

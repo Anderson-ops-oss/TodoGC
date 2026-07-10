@@ -22,8 +22,9 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
-color = ["rich>=13"]  # 可选：装了才有彩色输出，核心不依赖它
+dev = ["pytest>=7.0", "build>=1.0"]  # build：python -m build 打 wheel/sdist
+color = ["rich>=13"]                 # 可选：装了才有彩色输出，核心不依赖它
+web = ["streamlit>=1.30"]            # 可选：Web 端堆内存图 + 交互(todogc web)
 
 [project.scripts]
 # 安装后即可直接敲 `todogc gc`，无需 python -m todogc.cli。
