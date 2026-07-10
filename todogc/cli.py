@@ -304,6 +304,27 @@ def cmd_gc(store: Store, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_heap(store: Store, args: argparse.Namespace) -> int:
+    """heap(别名 jmap)：打印分代堆内存图——各代对象分布、-Xmx 占用、僵尸(☠)标红。
+
+    只读诊断快照：跑一次标记-清除拿到判定，但不进回收仪式、不写库，也不记 view 埋点
+    (复用 GC 扫描的 record_view=False 口径，避免每次看堆图都虚增查看次数)。
+
+    Args:
+        store (Store): 数据源。
+        args (argparse.Namespace): 需含 heap_max。
+
+    Returns:
+        int: 退出码(恒 0)。
+    """
+    now = datetime.now(timezone.utc)
+    result = _run_gc(store, now)
+    body = report.format_heap_map(result, store.root_ids(), heap_max=args.heap_max)
+    if not console.print_text(body):  # 装了 rich → 僵尸标红/★描金/填充条上色；否则纯文本
+        print(body)
+    return 0
+
+
 def cmd_graveyard(store: Store, args: argparse.Namespace) -> int:
     """graveyard：悼词墙，列出已回收任务的墓志铭与遗言。
 
@@ -400,6 +421,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--full", action="store_true", help="渲染为 Full GC")
     p.add_argument("--dry-run", action="store_true", help="只出报告，不进仪式")
     p.set_defaults(func=cmd_gc)
+
+    p = sub.add_parser("heap", aliases=["jmap"], help="打印分代堆内存图(僵尸标红)")
+    p.set_defaults(func=cmd_heap)
 
     p = sub.add_parser("graveyard", help="悼词墙")
     p.set_defaults(func=cmd_graveyard)

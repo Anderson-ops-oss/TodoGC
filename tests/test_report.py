@@ -62,3 +62,30 @@ def test_candidates_grouping(store, now):
     res = _result(store, now)
     txt = report.format_candidates(res, views_of=store.view_count)
     assert "互相担保" in txt and "unreachable" in txt and "stale" in txt
+
+
+def test_heap_map(store, now):
+    """堆图：分代分区、-Xmx 占用(不计 Metaspace)、僵尸标 ☠(环/孤儿/陈旧)、root 标 ★、meta 标 ⊛。"""
+    goal = store.add_task("G", is_root=True, ts=now)
+    store.add_task("A", root_id=goal.id, ts=now)  # 刚建、可达 → 存活，无标记
+    store.add_task("S", root_id=goal.id, ts=now - timedelta(days=40))  # 可达但陈旧
+    store.add_task("orphan", ts=now - timedelta(days=40))  # 不可达孤儿
+    a = store.add_task("学 Rust", ts=now - timedelta(days=40))
+    b = store.add_task("重写博客", ts=now - timedelta(days=40))
+    store.add_dep(a.id, b.id)
+    store.add_dep(b.id, a.id)
+    meta = store.add_task("变得更自律", meta=True, ts=now)
+    res = Collector().run_on_store(store, store.root_ids(), extra_edges=store.deps(), now=now)
+
+    txt = report.format_heap_map(res, store.root_ids(), heap_max=50)
+    assert "堆内存快照" in txt and "jmap" in txt
+    assert "-Xmx 占用: 6 / 50" in txt  # 6 个非 meta 对象；Metaspace 不计入 -Xmx
+    assert f"★ #{goal.id} G" in txt
+    assert f"☠ #{a.id} 学 Rust  (cycle #0)" in txt
+    assert "(unreachable)" in txt and "(stale" in txt
+    assert f"⊛ #{meta.id} 变得更自律" in txt
+    assert "Eden" in txt and "Metaspace" in txt
+    assert "█" in txt and "░" in txt  # -Xmx 占用填充条
+
+    plain = report.format_heap_map(res, store.root_ids())  # 不给 -Xmx 的变体
+    assert "堆对象: 6 个" in plain and "未设 -Xmx" in plain

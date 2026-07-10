@@ -56,6 +56,13 @@ if _HAVE_RICH:
             r"(?P<oom>Allocation Failure|Ergonomics|无力回天)",
             r"(?P<pct>释放认知内存 [\d.]+%)",
             r"(?P<zombie>\d+ zombies)",
+            # —— 堆内存图(format_heap_map)：僵尸行标红是核心诉求，其余为点缀。
+            # 用 │\s+ 作前缀锚点(只匹配对象行、放过图例行)，仅命名组内的文本被上色。
+            r"│\s+(?P<heap_zombie>☠[^\n]*)",
+            r"│\s+(?P<heap_root>★)",
+            r"│\s+(?P<heap_meta>⊛)",
+            r"(?P<heap_bar>\[[█░]+\])",
+            r"(?P<heap_region>[┌├] [A-Za-z]+ ·[^\n]*)",
         ]
 
     _THEME = Theme(
@@ -68,6 +75,11 @@ if _HAVE_RICH:
             "gc.oom": "bold red",
             "gc.pct": "bold cyan",
             "gc.zombie": "bold red",
+            "gc.heap_zombie": "red",
+            "gc.heap_root": "bold gold1",
+            "gc.heap_meta": "magenta",
+            "gc.heap_bar": "cyan",
+            "gc.heap_region": "bold",
         }
     )
 

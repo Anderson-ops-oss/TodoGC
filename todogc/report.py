@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import timedelta
 
-from todogc.collector import GCResult, Reason
-from todogc.heap import TENURING_THRESHOLD, Generation
+from todogc.collector import Candidate, GCResult, Reason
+from todogc.heap import TENURING_THRESHOLD, Generation, Task
 
 
 def _fmt_uptime(td: timedelta | None) -> str:
@@ -147,6 +147,117 @@ def format_candidates(result: GCResult, *, views_of: Callable[[int], int] | None
 
     if not result.candidates:
         lines.append("   (无候选。这次你居然没骗自己，难得。)")
+    return "\n".join(lines)
+
+
+# ---- 堆内存图(jmap 式一览：分代分布 + -Xmx 占用 + 僵尸标记) ----
+
+# 分代在堆图里的固定展示顺序与中/英文名(Eden → Survivor → Old → Metaspace)。
+_GEN_ORDER: tuple[tuple[Generation, str, str], ...] = (
+    (Generation.EDEN, "Eden", "新生代"),
+    (Generation.SURVIVOR, "Survivor", "幸存区"),
+    (Generation.OLD, "Old", "老年代"),
+    (Generation.META, "Metaspace", "元空间"),
+)
+
+
+def _fill_bar(used: int, cap: int, *, width: int = 20) -> str:
+    """把堆占用画成定宽的 [██░░] 填充条。
+
+    Args:
+        used (int): 已占用的对象数。
+        cap (int): 堆容量上限(-Xmx)；<= 0 视为无上限，画成全空条。
+        width (int): 填充条的总格子数。
+
+    Returns:
+        str: 形如 "[██████░░░░░░░░░░░░░░]" 的定宽字符串(含首尾方括号)；
+            used 超配(> cap)时填满，不越界。
+    """
+    if cap <= 0:
+        return "[" + "░" * width + "]"
+    filled = min(width, round(width * used / cap))
+    return "[" + "█" * filled + "░" * (width - filled) + "]"
+
+
+def _heap_row(task: Task, roots: set[int], cand_of: dict[int, Candidate]) -> str:
+    """渲染堆图里的一行对象：前缀标记 + #id 标题 + 判死注解。
+
+    标记优先级：root(★) > 元任务(⊛) > 回收候选/僵尸(☠) > 普通存活(空格)。
+    root 与元任务恒为存活、绝不会出现在候选里，故三者互斥、优先级安全。
+
+    Args:
+        task (Task): 待渲染的任务。
+        roots (set[int]): 活跃 root 的 id 集合。
+        cand_of (dict[int, Candidate]): id → 回收候选的映射(非候选者不在其中)。
+
+    Returns:
+        str: 形如 "  │   ☠ #3 学 Rust  (cycle #0)" 的单行文本(含左侧竖线导轨)。
+    """
+    cand = cand_of.get(task.id)
+    if task.id in roots:
+        marker = "★"
+    elif task.is_meta:
+        marker = "⊛"
+    elif cand is not None:
+        marker = "☠"
+    else:
+        marker = " "
+
+    annot = ""
+    if cand is not None:
+        if cand.reason is Reason.CYCLE:
+            annot = f"  (cycle #{cand.cycle_id})"
+        elif cand.reason is Reason.UNREACHABLE:
+            annot = "  (unreachable)"
+        elif cand.metrics is not None:
+            annot = f"  (stale · 推进{cand.metrics.refcount_30d} 推迟{cand.metrics.skip_count})"
+        else:
+            annot = "  (stale)"
+    return f"  │   {marker} #{task.id} {task.title}{annot}"
+
+
+def format_heap_map(result: GCResult, roots: set[int], *, heap_max: int | None = None) -> str:
+    """把当前活跃堆渲染成 JVM 风格的分代堆内存图(僵尸对象以 ☠ 标出)。
+
+    逐代(Eden / Survivor / Old / Metaspace)列出堆上对象，顶部给出 -Xmx 占用填充条，
+    并为每个回收候选标注判死原因。已回收(COLLECTED)的对象在垃圾桶而非堆上，不出现在
+    此图；Metaspace(元任务)不计入 -Xmx 占用，与 store.heap_size 同口径。
+
+    Args:
+        result (GCResult): 一次 GC 的结果；survivors + candidates 即堆上全部对象。
+        roots (set[int]): 活跃 root 的 id 集合(标 ★)。
+        heap_max (int | None): 堆容量上限(-Xmx)；给出则画占用填充条，None 则只报对象数。
+
+    Returns:
+        str: 多行堆内存图文本。
+    """
+    cand_of = {c.task.id: c for c in result.candidates}
+    tasks = list(result.survivors) + [c.task for c in result.candidates]
+    by_gen: dict[Generation, list[Task]] = {gen: [] for gen, _, _ in _GEN_ORDER}
+    for t in tasks:
+        by_gen.setdefault(t.gen, []).append(t)
+    used = sum(1 for t in tasks if t.gen is not Generation.META)
+
+    if heap_max is not None:
+        pct = round(100 * used / heap_max, 1) if heap_max > 0 else 0.0
+        usage = (
+            f"  -Xmx 占用: {used} / {heap_max} obj  "
+            f"{_fill_bar(used, heap_max)} {pct}%   (Metaspace 不计)"
+        )
+    else:
+        usage = f"  堆对象: {used} 个(未设 -Xmx)   (Metaspace 不计)"
+
+    lines = ["━━ 堆内存快照 · jmap -heap ━━━━━━━━━━━━━━━━", usage, ""]
+    for i, (gen, en, cn) in enumerate(_GEN_ORDER):
+        conn = "┌" if i == 0 else "├"
+        items = sorted(by_gen.get(gen, []), key=lambda t: t.id or 0)
+        lines.append(f"  {conn} {en} · {cn} ({len(items)})")
+        if items:
+            lines.extend(_heap_row(t, roots, cand_of) for t in items)
+        else:
+            lines.append("  │   (空)")
+    lines.append("  └" + "─" * 14)
+    lines.append("  图例: ★ root · ☠ 回收候选(僵尸) · ⊛ 元任务")
     return "\n".join(lines)
 
 
