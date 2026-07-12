@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from todogc.cli import _finalize_spent, main, run_ceremony
 from todogc.collector import Collector
 from todogc.heap import State, TouchKind
@@ -78,7 +80,7 @@ def test_finalize_only_once(store, now):
     """复活过的任务再被回收，不再收集遗言，盖章 finalize() already called。"""
     store.add_task("G", is_root=True, ts=now)
     x = store.add_task("X", ts=now)
-    store.record(x.id, TouchKind.REVIVE, ts=now)  # 假装上轮复活过
+    store.record(x.id, TouchKind.REVIVE, ts=now - timedelta(days=8))  # 上轮复活，宽限期已过
     assert _finalize_spent(store, x.id)
     res = Collector().run_on_store(store, store.root_ids(), now=now)
     run_ceremony(store, res, decide=lambda c: "collect", eulogize=lambda c: "不该采用", now=now)
