@@ -4,7 +4,7 @@
 > ……说人话：它把你的待办清单当成程序的堆内存，用垃圾回收算法冷酷地识别并回收那些"你其实这辈子都不会做"的僵尸任务。
 
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
-![tests](https://img.shields.io/badge/tests-28%20passing-brightgreen)
+[![CI](https://github.com/Anderson-ops-oss/TodoGC/actions/workflows/ci.yml/badge.svg)](https://github.com/Anderson-ops-oss/TodoGC/actions/workflows/ci.yml)
 ![deps](https://img.shields.io/badge/dependencies-0-success)
 ![人生覆盖率](https://img.shields.io/badge/%E4%BA%BA%E7%94%9F%E8%A6%86%E7%9B%96%E7%8E%87-12%25-red)
 ![GC throughput](https://img.shields.io/badge/GC%20throughput-98%25-success)
@@ -57,6 +57,12 @@ todogc gc                                    # 触发回收 + Stop-the-world 仪
 todogc gc --dry-run                          # 只出报告，不进仪式
 todogc graveyard                             # 悼词墙：看看你都埋了什么
 todogc restore 3                             # 手滑了？从垃圾桶捞回来
+todogc show 3                                # 详情 + 泄漏指标
+todogc history 3                             # append-only 事件时间线
+todogc edit 3 "学完 Rust 第一章" --ref weak   # 编辑 + strong/soft/weak
+todogc link 3 1                              # 重连父目标；--off 解除
+todogc doctor                                # Cognitive Leak Detector
+todogc stats --since 30d                     # GC 历史统计
 ```
 
 ### 一次 `gc --dry-run` 长这样
@@ -110,8 +116,31 @@ todogc web                 # 起本地服务、浏览器打开(--port 改端口)
 - **-Xmx 占用条** + 四代卡片（Eden / Survivor / Old / Metaspace）：僵尸行**标红**、`★` root 描金、`⊛` 元任务品红——配色语义与 CLI 一致
 - **Stop-the-world 仪式** 直接在页面点：逐个僵尸选「复活 / 回收 / 跳过」、填 `finalize()` 遗言，一键执行——走的还是 CLI 那套 `run_ceremony`（`finalize` 只调一次、复活会晋升分代）
 - 侧栏 **add**（含 -Xmx 满则 Allocation Failure 拒绝分配）、**墓园**一键 `restore`
+- **任务详情**支持 edit/progress/snooze/link/dep 与事件时间线；**Leak Inspector** 和 GC 历史与 CLI 同源
 
 Web 端是可选的：没装 `streamlit`，`todogc web` 只会友好提示去装，绝不影响其它命令；浏览器里的自动刷新不算「查看」（不虚增 view 埋点）。
+
+## v0.2：策略、引用强度与认知泄漏诊断
+
+项目目录可放一个 `todogc.toml`（完整样例见 `todogc.toml.example`）：
+
+```toml
+[gc]
+mode = "normal"                 # gentle / normal / aggressive
+recent_days = 30
+max_consecutive_skips = 5
+restore_grace_days = 7
+
+[heap]
+max = 50
+```
+
+优先级为 CLI 参数 > 环境变量 > `todogc.toml` > 默认值。`strong` 可达即保留；
+`soft` 使用常规活跃度规则；`weak` 必须在时间窗内有真推进。推进、编辑、复活和恢复会
+清零“连续推迟”，但历史累计推迟仍保留用于审计；恢复任务默认享有 7 天宽限期。
+
+数据库会自动从旧版迁移到 schema v3；迁移文件库前先生成同目录 `.bak`。真实执行的 GC
+写入审计历史，`heap` 与 `gc --dry-run` 始终只读。
 
 ## 判活规则
 
@@ -119,9 +148,12 @@ Web 端是可选的：没装 `streamlit`，`todogc web` 只会友好提示去装
 
 ```
 alive = 关联到某个活跃 root
-     && (最近 30 天内真碰过  ||  近 30 天有真推进)
-     && 推迟次数 < 5
+     && (最近 N 天有有效活动  ||  近 N 天有真推进)
+     && 连续推迟次数 < max_consecutive_skips
 ```
+
+`DEFER` 和 `VIEW` 不刷新有效活动时间；只看不做、只往后推都不能保活。GC root 与
+Metaspace 仍默认常驻，`doctor` 会单独审计它们是否正在制造认知内存泄漏。
 
 外加一条：互相担保、却谁都不连 root 的**引用环**，整环回收——这正是引用计数 GC 抓不到、只有可达性分析能揪出来的自欺盲区。阈值都在 `GCPolicy` 里，自己调到"确实有点心虚"。
 
@@ -129,6 +161,7 @@ alive = 关联到某个活跃 root
 
 ```
 todogc/
+  config.py     todogc.toml + 环境变量配置（Python 3.10 仍保持零依赖）
   heap.py       领域模型(Task / Touch / 分代枚举)
   store.py      SQLite 持久化 + 自动埋点 + 判活指标
   collector.py  可达性标记 + Tarjan 抓环 + 判活清除
@@ -150,8 +183,8 @@ pytest
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # 产出 dist/todogc-0.1.0-py3-none-any.whl 与 .tar.gz
-pip install dist/todogc-0.1.0-py3-none-any.whl   # 到哪都能装
+python -m build          # 产出 dist/todogc-0.2.0-py3-none-any.whl 与 .tar.gz
+pip install dist/todogc-0.2.0-py3-none-any.whl   # 到哪都能装
 ```
 
 `dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。
@@ -160,9 +193,11 @@ pip install dist/todogc-0.1.0-py3-none-any.whl   # 到哪都能装
 
 **已实现**：全部 MVP（录入 / 触碰追踪 / 可达性 + 循环引用 / 回收仪式 / 垃圾桶恢复）、JVM 风格 GC 日志、`finalize()` 遗言（含"只能复活一次"）、分代打脸、Metaspace 元任务、`-Xmx` 堆容量约束（`add` 满则触发 Allocation Failure、绝不自动删）、`rich` 彩色输出（可选）、堆内存图（`heap` / `jmap` 分代快照 + -Xmx 占用条 + 僵尸标红）、Web 端（`web`：Streamlit 堆内存图 + add/gc/restore 交互，可选）、标准打包（`python -m build` → wheel / sdist）。
 
-**还没做（欢迎 PR）**：
+**v0.2 已实现**：数据库迁移与备份、连续推迟/恢复宽限期、strong/soft/weak、
+gentle/normal/aggressive、show/edit/history/link、doctor、GC 历史 stats、Web 任务详情与
+Leak Inspector、输入校验与对抗测试。
 
-- 弱 / 软引用优先级分级（不同回收激进度）
+**后续候选（欢迎 PR）**：GitHub Issues/PR 同步、TODO/FIXME 导入、交互式引用图、定时 GC。
 
 > 说明：任务的"年龄"目前在**回收仪式里被复活时** +1（即"你逃过它几次"），而非每轮 GC 自动 +1。
 

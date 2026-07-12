@@ -5,6 +5,7 @@ __pycache__/
 .eggs/
 build/
 dist/
+dist-*/
 
 # 虚拟环境
 .venv/
@@ -13,6 +14,7 @@ env/
 
 # 测试 / 工具缓存
 .pytest_cache/
+.pytest-tmp*/
 .mypy_cache/
 .ruff_cache/
 .coverage
@@ -20,6 +22,7 @@ htmlcov/
 
 # TodoGC 运行时数据库（用户数据，不入库）
 *.db
+*.db.bak
 todogc.db
 
 # 编辑器 / 系统

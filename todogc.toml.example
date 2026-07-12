@@ -1,0 +1,8 @@
+[gc]
+mode = "normal"
+recent_days = 30
+max_consecutive_skips = 5
+restore_grace_days = 7
+
+[heap]
+max = 50
