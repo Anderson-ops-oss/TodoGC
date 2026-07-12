@@ -384,20 +384,33 @@ def format_report(
     result: GCResult,
     *,
     views_of: Callable[[int], int] | None = None,
-    **log_kwargs: object,
+    gc_id: int = 0,
+    uptime: timedelta | None = None,
+    pause_full: bool = False,
+    cause: str | None = None,
+    pause: timedelta | None = None,
+    heap_max: int | None = None,
 ) -> str:
     """把 GC 日志与候选清单拼成一份完整回收报告。
 
     Args:
         result (GCResult): 本轮 GC 结果。
         views_of (Callable[[int], int] | None): 透传给 format_candidates 的查看次数回调。
-        **log_kwargs (object): 透传给 format_gc_log 的关键字参数
-            (gc_id / uptime / pause_full / cause / pause / heap_max)。
+        其余参数：透传给 format_gc_log。
 
     Returns:
         str: GC 日志 + 空行 + 候选清单。
     """
-    return format_gc_log(result, **log_kwargs) + "\n\n" + format_candidates(result, views_of=views_of)
+    log = format_gc_log(
+        result,
+        gc_id=gc_id,
+        uptime=uptime,
+        pause_full=pause_full,
+        cause=cause,
+        pause=pause,
+        heap_max=heap_max,
+    )
+    return log + "\n\n" + format_candidates(result, views_of=views_of)
 
 
 def format_doctor(store: Store, result: GCResult, *, now: datetime | None = None) -> str:

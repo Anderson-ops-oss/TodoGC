@@ -3,19 +3,29 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import TYPE_CHECKING, Literal
 
 from todogc.heap import Generation, State, Task
 
-try:
-    from rich.console import Console
-    from rich.highlighter import RegexHighlighter
-    from rich.markup import escape
-    from rich.table import Table
-    from rich.theme import Theme
+if TYPE_CHECKING:
+    from rich.console import Console  # pyright: ignore[reportMissingImports]
+    from rich.highlighter import RegexHighlighter  # pyright: ignore[reportMissingImports]
+    from rich.markup import escape  # pyright: ignore[reportMissingImports]
+    from rich.table import Table  # pyright: ignore[reportMissingImports]
+    from rich.theme import Theme  # pyright: ignore[reportMissingImports]
 
     _HAVE_RICH = True
-except ImportError:  # rich 未安装：一切回退纯文本
-    _HAVE_RICH = False
+else:
+    try:
+        from rich.console import Console
+        from rich.highlighter import RegexHighlighter
+        from rich.markup import escape
+        from rich.table import Table
+        from rich.theme import Theme
+
+        _HAVE_RICH = True
+    except ImportError:  # rich 未安装：一切回退纯文本
+        _HAVE_RICH = False
 
 
 def have_rich() -> bool:
@@ -133,7 +143,7 @@ def render_ls(tasks: Iterable[Task], root_ids: set[int]) -> bool:
         c.print("[dim](空堆)[/dim]")
         return True
     table = Table(show_header=True, header_style="bold")
-    for col, just in (
+    columns: tuple[tuple[str, Literal["left", "right"]], ...] = (
         ("#", "right"),
         ("gen", "left"),
         ("age", "right"),
@@ -141,7 +151,8 @@ def render_ls(tasks: Iterable[Task], root_ids: set[int]) -> bool:
         ("ref", "left"),
         ("→root", "left"),
         ("state", "left"),
-    ):
+    )
+    for col, just in columns:
         table.add_column(col, justify=just)
     for t in rows:
         star = "[gold1]★[/] " if t.id in root_ids else ""

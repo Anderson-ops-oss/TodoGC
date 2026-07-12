@@ -18,6 +18,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e ".[dev]"
       - run: ruff check todogc tests
+      - run: basedpyright
       - run: pytest
       - if: matrix.python-version == '3.13'
         run: python -m build

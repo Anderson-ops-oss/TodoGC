@@ -64,6 +64,18 @@ def test_candidates_grouping(store, now):
     assert "互相担保" in txt and "unreachable" in txt and "stale" in txt
 
 
+def test_format_report_accepts_typed_log_options(store, now):
+    """format_report 的显式参数应完整透传，避免 **object 破坏静态类型。"""
+    txt = report.format_report(
+        _result(store, now),
+        gc_id=9,
+        heap_max=20,
+        pause_full=True,
+        views_of=store.view_count,
+    )
+    assert "GC(9) Pause Full" in txt and "上限 20" in txt
+
+
 def test_heap_map(store, now):
     """堆图：分代分区、-Xmx 占用(不计 Metaspace)、僵尸标 ☠(环/孤儿/陈旧)、root 标 ★、meta 标 ⊛。"""
     goal = store.add_task("G", is_root=True, ts=now)

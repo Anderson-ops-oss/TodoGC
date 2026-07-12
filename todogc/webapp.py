@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import os
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from todogc import report
 from todogc.cli import HEAP_MAX, run_ceremony  # 共享的 -Xmx 默认与回收仪式纯逻辑核心
@@ -14,15 +15,21 @@ from todogc.heap import ReferenceStrength, State, TouchKind
 from todogc.report import HeapRow, RowKind
 from todogc.store import Store
 
-try:
-    import streamlit as st
-    from streamlit.runtime import exists as _st_runtime_exists
+if TYPE_CHECKING:
+    import streamlit as st  # pyright: ignore[reportMissingImports]
+    from streamlit.runtime import exists as _st_runtime_exists  # pyright: ignore[reportMissingImports]
 
     _HAVE_STREAMLIT = True
-except ImportError:  # 没装 streamlit：模块仍可被 import(供测试/CLI 探测)，只是起不了服务
-    st = None
-    _st_runtime_exists = None
-    _HAVE_STREAMLIT = False
+else:
+    try:
+        import streamlit as st
+        from streamlit.runtime import exists as _st_runtime_exists
+
+        _HAVE_STREAMLIT = True
+    except ImportError:  # 没装 streamlit：模块仍可被 import(供测试/CLI 探测)，只是起不了服务
+        st = None
+        _st_runtime_exists = None
+        _HAVE_STREAMLIT = False
 
 
 # RowKind → HTML 颜色(与 CLI 的 rich 主题对齐：root 描金、僵尸红、元任务品红)。
@@ -186,7 +193,7 @@ def _render_ceremony(
     choices: dict[int, str] = {}
     eulogies: dict[int, str] = {}
     for cand in result.candidates:
-        tid = cand.task.id
+        tid = cand.task.persisted_id
         c0, c1, c2 = st.columns([4, 3, 4])
         c0.markdown(
             f"**#{tid}** {html.escape(cand.task.title)}  \n"
@@ -204,8 +211,8 @@ def _render_ceremony(
         out = run_ceremony(
             store,
             result,
-            decide=lambda c: label_map[choices[c.task.id]],
-            eulogize=lambda c: eulogies.get(c.task.id, ""),
+            decide=lambda c: label_map[choices[c.task.persisted_id]],
+            eulogize=lambda c: eulogies.get(c.task.persisted_id, ""),
             revive_root=(roots[0] if roots else None),
             now=now,
         )
@@ -225,7 +232,10 @@ def _render_ceremony(
             released_pct=round(
                 100 * len(out.collected) / (len(result.survivors) + len(result.candidates)), 1
             ),
-            items=[(c.task.id, c.reason.value, actions[c.task.id]) for c in result.candidates],
+            items=[
+                (c.task.persisted_id, c.reason.value, actions[c.task.persisted_id])
+                for c in result.candidates
+            ],
         )
         st.success(
             f"仪式结束：复活 {len(out.revived)} · 回收 {len(out.collected)} · 跳过 {len(out.skipped)}"
@@ -291,19 +301,20 @@ def _render_graveyard(store: Store, now: datetime) -> None:
         st.caption("墓园空空。你还没对自己诚实过。")
         return
     for t in dead:
-        collects = [x for x in store.touches(t.id) if x.kind is TouchKind.COLLECT]
+        task_id = t.persisted_id
+        collects = [x for x in store.touches(task_id) if x.kind is TouchKind.COLLECT]
         last = collects[-1] if collects else None
         days = (last.ts - t.created_at).days if last is not None and t.created_at is not None else 0
         c0, c1 = st.columns([6, 1])
         c0.markdown(
-            f"† **{html.escape(t.title)}** · 存活 {days}d · 推进 {store.refcount(t.id)} · "
-            f"查看 {store.view_count(t.id)}  \n"
+            f"† **{html.escape(t.title)}** · 存活 {days}d · 推进 {store.refcount(task_id)} · "
+            f"查看 {store.view_count(task_id)}  \n"
             f":gray[「{html.escape(last.note) if last is not None and last.note else ''}」]"
         )
-        if c1.button("恢复", key=f"restore_{t.id}"):
+        if c1.button("恢复", key=f"restore_{task_id}"):
             t.state = State.LIVE
             store.update_task(t)
-            store.record(t.id, TouchKind.RESTORE, ts=now)
+            store.record(task_id, TouchKind.RESTORE, ts=now)
             st.rerun()
 
 
@@ -313,63 +324,65 @@ def _render_task_manager(store: Store, now: datetime) -> None:
     if not tasks:
         st.caption("没有可管理的活跃任务。")
         return
-    by_id = {t.id: t for t in tasks}
-    selected = st.selectbox(
+    by_id = {t.persisted_id: t for t in tasks}
+    selected_value = st.selectbox(
         "选择任务", list(by_id), format_func=lambda tid: f"#{tid} {by_id[tid].title}", key="task_manager_id"
     )
+    selected = int(selected_value)
     task = by_id[selected]
+    task_id = task.persisted_id
     c0, c1 = st.columns(2)
-    title = c0.text_input("标题", value=task.title, key=f"edit_title_{task.id}")
+    title = c0.text_input("标题", value=task.title, key=f"edit_title_{task_id}")
     strength_values = [r.value for r in ReferenceStrength]
     strength = c1.selectbox(
         "引用强度", strength_values, index=strength_values.index(task.ref_strength.value),
-        key=f"edit_ref_{task.id}",
+        key=f"edit_ref_{task_id}",
     )
-    note = st.text_input("事件说明", key=f"event_note_{task.id}")
+    note = st.text_input("事件说明", key=f"event_note_{task_id}")
     b0, b1, b2 = st.columns(3)
-    if b0.button("保存编辑", key=f"save_{task.id}"):
+    if b0.button("保存编辑", key=f"save_{task_id}"):
         try:
-            store.edit_task(task.id, title=title, ref_strength=strength, ts=now)
+            store.edit_task(task_id, title=title, ref_strength=strength, ts=now)
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
-    if b1.button("+1 真推进", key=f"progress_{task.id}"):
-        store.progress(task.id, note, ts=now)
+    if b1.button("+1 真推进", key=f"progress_{task_id}"):
+        store.progress(task_id, note, ts=now)
         st.rerun()
-    if b2.button("推迟", key=f"defer_{task.id}"):
-        store.defer(task.id, note, ts=now)
+    if b2.button("推迟", key=f"defer_{task_id}"):
+        store.defer(task_id, note, ts=now)
         st.rerun()
 
     parent = st.number_input(
         "关联到父/目标（0 = 解除）", min_value=0, value=int(task.root_id or 0), step=1,
-        key=f"parent_{task.id}",
+        key=f"parent_{task_id}",
     )
-    if st.button("更新关联", key=f"link_{task.id}"):
+    if st.button("更新关联", key=f"link_{task_id}"):
         try:
-            store.unlink(task.id, ts=now) if int(parent) == 0 else store.link(task.id, int(parent), ts=now)
+            store.unlink(task_id, ts=now) if int(parent) == 0 else store.link(task_id, int(parent), ts=now)
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
 
     dep_id = st.number_input(
-        "理由/前置任务 ID", min_value=1, value=1, step=1, key=f"dep_{task.id}"
+        "理由/前置任务 ID", min_value=1, value=1, step=1, key=f"dep_{task_id}"
     )
     d0, d1 = st.columns(2)
-    if d0.button("添加理由边", key=f"dep_add_{task.id}"):
+    if d0.button("添加理由边", key=f"dep_add_{task_id}"):
         try:
-            store.add_dep(task.id, int(dep_id))
+            store.add_dep(task_id, int(dep_id))
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
-    if d1.button("删除理由边", key=f"dep_remove_{task.id}"):
-        store.remove_dep(task.id, int(dep_id))
+    if d1.button("删除理由边", key=f"dep_remove_{task_id}"):
+        store.remove_dep(task_id, int(dep_id))
         st.rerun()
 
-    deps = [ref for owner, ref in store.deps() if owner == task.id]
+    deps = [ref for owner, ref in store.deps() if owner == task_id]
     st.caption("当前理由边：" + (", ".join(f"#{ref}" for ref in deps) if deps else "无"))
 
-    with st.expander(f"事件时间线 ({len(store.touches(task.id))})"):
-        for touch in reversed(store.touches(task.id)):
+    with st.expander(f"事件时间线 ({len(store.touches(task_id))})"):
+        for touch in reversed(store.touches(task_id)):
             st.code(
                 f"{touch.ts.isoformat()}  {touch.kind.value}"
                 + (f" · {touch.note}" if touch.note else ""),

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from todogc.heap import TENURING_THRESHOLD, Generation, State, Task, Touch, TouchKind
 
 
@@ -27,6 +29,8 @@ def test_task_defaults_and_aged():
     """默认未关联/EDEN/LIVE；aged() 返回新对象且不改原对象。"""
     t = Task(title="学吉他")
     assert t.is_unlinked and t.gen is Generation.EDEN and t.state is State.LIVE
+    with pytest.raises(ValueError, match="尚未落库"):
+        _ = t.persisted_id
     t2 = t.aged()
     assert t2.age == 1 and t2.gen is Generation.SURVIVOR
     assert t.age == 0  # 值语义：原对象不被就地修改

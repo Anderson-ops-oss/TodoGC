@@ -359,7 +359,10 @@ def cmd_gc(store: Store, args: argparse.Namespace) -> int:
         released_pct=round(
             100 * len(out.collected) / (len(result.survivors) + len(result.candidates)), 1
         ),
-        items=[(c.task.id, c.reason.value, actions[c.task.id]) for c in result.candidates],
+        items=[
+            (c.task.persisted_id, c.reason.value, actions[c.task.persisted_id])
+            for c in result.candidates
+        ],
     )
     print(f"\n[GC] 仪式结束：复活 {len(out.revived)} · 回收 {len(out.collected)} · 跳过 {len(out.skipped)}")
     return 0
@@ -441,10 +444,14 @@ def cmd_graveyard(store: Store, args: argparse.Namespace) -> int:
         print("墓园空空。你还没对自己诚实过。")
         return 0
     for t in dead:
-        collects = [x for x in store.touches(t.id) if x.kind is TouchKind.COLLECT]
+        task_id = t.persisted_id
+        collects = [x for x in store.touches(task_id) if x.kind is TouchKind.COLLECT]
         last = collects[-1] if collects else None
         days = (last.ts - t.created_at).days if last and t.created_at else 0
-        print(f"† {t.title}   存活 {days}d · 推进 {store.refcount(t.id)} · 查看 {store.view_count(t.id)}")
+        print(
+            f"† {t.title}   存活 {days}d · 推进 {store.refcount(task_id)} "
+            f"· 查看 {store.view_count(task_id)}"
+        )
         print(f"  「{last.note if last else ''}」")
     return 0
 
@@ -490,18 +497,20 @@ def cmd_show(store: Store, args: argparse.Namespace) -> int:
     if task is None:
         print(f"✗ 没有 #{args.id}", file=sys.stderr)
         return 1
+    task_id = task.persisted_id
     roots = store.root_ids()
-    print(f"#{task.id} {task.title}")
+    print(f"#{task_id} {task.title}")
     print(
         f"  state={task.state.value} gen={task.gen.value}:{task.age} "
-        f"ref={task.ref_strength.value} root={'yes' if task.id in roots else 'no'} "
+        f"ref={task.ref_strength.value} root={'yes' if task_id in roots else 'no'} "
         f"parent={task.root_id or '-'}"
     )
     print(
-        f"  progress={store.refcount(task.id)} views={store.view_count(task.id)} "
-        f"skips={store.skip_count(task.id)} consecutive_skips={store.consecutive_skip_count(task.id)}"
+        f"  progress={store.refcount(task_id)} views={store.view_count(task_id)} "
+        f"skips={store.skip_count(task_id)} "
+        f"consecutive_skips={store.consecutive_skip_count(task_id)}"
     )
-    deps = [ref for tid, ref in store.deps() if tid == task.id]
+    deps = [ref for tid, ref in store.deps() if tid == task_id]
     print(f"  deps={','.join(map(str, deps)) if deps else '-'}")
     return 0
 

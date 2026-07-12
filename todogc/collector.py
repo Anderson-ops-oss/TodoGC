@@ -232,14 +232,14 @@ class Collector:
         now = now or datetime.now(timezone.utc)
         # 已回收(COLLECTED)的任务躺在垃圾桶里，不该被下一轮 GC 再刨出来当候选。
         tasks = {
-            t.id: t
+            t.persisted_id: t
             for t in store.list_tasks(record_view=False)
-            if t.id is not None and t.state is not State.COLLECTED
+            if t.state is not State.COLLECTED
         }
         edges: dict[int, set[int]] = defaultdict(set)
         for t in tasks.values():
             if t.root_id is not None:
-                edges[t.root_id].add(t.id)  # 父(目标/任务)引用子任务
+                edges[t.root_id].add(t.persisted_id)  # 父(目标/任务)引用子任务
         for a, b in extra_edges or ():
             edges[a].add(b)
 

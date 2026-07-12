@@ -174,6 +174,8 @@ todogc/
 
 ```bash
 pip install -e ".[dev]"
+basedpyright            # Pylance/Pyright：0 errors
+ruff check todogc tests
 pytest
 ```
 

@@ -215,6 +215,14 @@ class Store:
         return datetime.fromisoformat(s)
 
     @staticmethod
+    def _lastrowid(cur: sqlite3.Cursor) -> int:
+        """取得 INSERT 主键；驱动未返回主键时给出明确错误。"""
+        row_id = cur.lastrowid
+        if row_id is None:
+            raise RuntimeError("SQLite INSERT 未返回 lastrowid")
+        return row_id
+
+    @staticmethod
     def _row_to_task(row: sqlite3.Row) -> Task:
         """把 task 表的一行映射为 Task 领域对象。
 
@@ -291,7 +299,7 @@ class Store:
             "VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
             (title, root_id, int(is_root), gen.value, State.LIVE.value, iso, strength.value),
         )
-        task_id = int(cur.lastrowid)
+        task_id = self._lastrowid(cur)
         self.record(task_id, TouchKind.CREATE, ts=now)
         self._conn.commit()
         return Task(
@@ -331,7 +339,10 @@ class Store:
             (task_id, kind.value, iso, note),
         )
         self._conn.commit()
-        return Touch(id=int(cur.lastrowid), task_id=task_id, kind=kind, ts=self._from_iso(iso), note=note)
+        return Touch(
+            id=self._lastrowid(cur), task_id=task_id, kind=kind,
+            ts=self._from_iso(iso), note=note,
+        )
 
     def progress(self, task_id: int, note: str | None = None, ts: datetime | None = None) -> Touch:
         """标记"我真的推进了这个任务"——记一条 PROGRESS 事件(计入 refcount)。
@@ -725,7 +736,7 @@ class Store:
                 collected, revived, released_pct,
             ),
         )
-        run_id = int(cur.lastrowid)
+        run_id = self._lastrowid(cur)
         if items:
             self._conn.executemany(
                 "INSERT INTO gc_run_item(run_id, task_id, reason, action) VALUES (?, ?, ?, ?)",

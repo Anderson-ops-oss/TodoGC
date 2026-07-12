@@ -141,6 +141,17 @@ class Task:
         return self.root_id is None
 
     @property
+    def persisted_id(self) -> int:
+        """返回已落库 id；未落库对象调用时立即失败。
+
+        这是从 ``Task`` 的草稿态进入持久化操作的类型安全边界：调用方拿到的恒为
+        ``int``，无需把 ``int | None`` 传播到 Store、审计和 UI 层。
+        """
+        if self.id is None:
+            raise ValueError("任务尚未落库，没有可用 id")
+        return self.id
+
+    @property
     def is_meta(self) -> bool:
         """是否为常驻 Metaspace 的元任务。
 
