@@ -8,8 +8,9 @@ from datetime import datetime, timedelta, timezone
 
 from todogc import report
 from todogc.cli import HEAP_MAX, run_ceremony  # 共享的 -Xmx 默认与回收仪式纯逻辑核心
-from todogc.collector import Collector, GCResult
-from todogc.heap import State, TouchKind
+from todogc.collector import Collector, GCPolicy, GCResult
+from todogc.config import load_config
+from todogc.heap import ReferenceStrength, State, TouchKind
 from todogc.report import HeapRow, RowKind
 from todogc.store import Store
 
@@ -56,7 +57,7 @@ def _default_heap_max() -> int:
     return int(raw) if raw.isdigit() and int(raw) > 0 else HEAP_MAX
 
 
-def _gc(store: Store, now: datetime) -> GCResult:
+def _gc(store: Store, now: datetime, policy: GCPolicy | None = None) -> GCResult:
     """跑一次标记-清除(与 CLI 同口径：root + 理由边)。
 
     Args:
@@ -66,7 +67,7 @@ def _gc(store: Store, now: datetime) -> GCResult:
     Returns:
         GCResult: 本轮 GC 结果。
     """
-    return Collector().run_on_store(store, store.root_ids(), extra_edges=store.deps(), now=now)
+    return Collector(policy).run_on_store(store, store.root_ids(), extra_edges=store.deps(), now=now)
 
 
 def _row_markup(row: HeapRow) -> str:
@@ -164,7 +165,9 @@ def _render_report(
         st.code(report.format_candidates(result, views_of=store.view_count), language=None)
 
 
-def _render_ceremony(store: Store, result: GCResult, now: datetime) -> None:
+def _render_ceremony(
+    store: Store, result: GCResult, now: datetime, *, mode: str = "normal", heap_before: int = 0
+) -> None:
     """渲染 Stop-the-world 交互仪式：逐候选选复活/回收/跳过，执行时复用 run_ceremony。
 
     Args:
@@ -206,6 +209,24 @@ def _render_ceremony(store: Store, result: GCResult, now: datetime) -> None:
             revive_root=(roots[0] if roots else None),
             now=now,
         )
+        actions = {
+            **{tid: "revive" for tid in out.revived},
+            **{tid: "collect" for tid in out.collected},
+            **{tid: "skip" for tid in out.skipped},
+        }
+        store.record_gc_run(
+            started_at=now,
+            mode=mode,
+            heap_before=heap_before,
+            survivors=len(result.survivors),
+            candidates=len(result.candidates),
+            collected=len(out.collected),
+            revived=len(out.revived),
+            released_pct=round(
+                100 * len(out.collected) / (len(result.survivors) + len(result.candidates)), 1
+            ),
+            items=[(c.task.id, c.reason.value, actions[c.task.id]) for c in result.candidates],
+        )
         st.success(
             f"仪式结束：复活 {len(out.revived)} · 回收 {len(out.collected)} · 跳过 {len(out.skipped)}"
         )
@@ -229,6 +250,7 @@ def _render_add(store: Store, heap_max: int, now: datetime) -> None:
         is_root = st.checkbox("设为活跃 root（★ 目标）")
         root_id = st.number_input("关联到 root-id（0 = 不关联）", min_value=0, value=0, step=1)
         meta = st.checkbox("元任务（Metaspace，不计 -Xmx）")
+        ref_strength = st.selectbox("引用强度", [r.value for r in ReferenceStrength], index=1)
         force = st.checkbox("--force 强行超配")
         submitted = st.form_submit_button("分配")
 
@@ -242,7 +264,14 @@ def _render_add(store: Store, heap_max: int, now: datetime) -> None:
         else:
             st.warning("[Full GC · Ergonomics] 且无可回收——-Xmx 拉满，砍需求而非加内存。")
         return
-    t = store.add_task(title.strip(), root_id=(int(root_id) or None), is_root=is_root, meta=meta, ts=now)
+    try:
+        t = store.add_task(
+            title.strip(), root_id=(int(root_id) or None), is_root=is_root, meta=meta,
+            ref_strength=ref_strength, ts=now,
+        )
+    except ValueError as exc:
+        st.error(str(exc))
+        return
     st.success(f"分配 #{t.id}: {t.title}")
     st.rerun()
 
@@ -278,6 +307,76 @@ def _render_graveyard(store: Store, now: datetime) -> None:
             st.rerun()
 
 
+def _render_task_manager(store: Store, now: datetime) -> None:
+    """任务详情、编辑、推进、推迟、关联和事件时间线。"""
+    tasks = [t for t in store.list_tasks(record_view=False) if t.state is not State.COLLECTED]
+    if not tasks:
+        st.caption("没有可管理的活跃任务。")
+        return
+    by_id = {t.id: t for t in tasks}
+    selected = st.selectbox(
+        "选择任务", list(by_id), format_func=lambda tid: f"#{tid} {by_id[tid].title}", key="task_manager_id"
+    )
+    task = by_id[selected]
+    c0, c1 = st.columns(2)
+    title = c0.text_input("标题", value=task.title, key=f"edit_title_{task.id}")
+    strength_values = [r.value for r in ReferenceStrength]
+    strength = c1.selectbox(
+        "引用强度", strength_values, index=strength_values.index(task.ref_strength.value),
+        key=f"edit_ref_{task.id}",
+    )
+    note = st.text_input("事件说明", key=f"event_note_{task.id}")
+    b0, b1, b2 = st.columns(3)
+    if b0.button("保存编辑", key=f"save_{task.id}"):
+        try:
+            store.edit_task(task.id, title=title, ref_strength=strength, ts=now)
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+    if b1.button("+1 真推进", key=f"progress_{task.id}"):
+        store.progress(task.id, note, ts=now)
+        st.rerun()
+    if b2.button("推迟", key=f"defer_{task.id}"):
+        store.defer(task.id, note, ts=now)
+        st.rerun()
+
+    parent = st.number_input(
+        "关联到父/目标（0 = 解除）", min_value=0, value=int(task.root_id or 0), step=1,
+        key=f"parent_{task.id}",
+    )
+    if st.button("更新关联", key=f"link_{task.id}"):
+        try:
+            store.unlink(task.id, ts=now) if int(parent) == 0 else store.link(task.id, int(parent), ts=now)
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+
+    dep_id = st.number_input(
+        "理由/前置任务 ID", min_value=1, value=1, step=1, key=f"dep_{task.id}"
+    )
+    d0, d1 = st.columns(2)
+    if d0.button("添加理由边", key=f"dep_add_{task.id}"):
+        try:
+            store.add_dep(task.id, int(dep_id))
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+    if d1.button("删除理由边", key=f"dep_remove_{task.id}"):
+        store.remove_dep(task.id, int(dep_id))
+        st.rerun()
+
+    deps = [ref for owner, ref in store.deps() if owner == task.id]
+    st.caption("当前理由边：" + (", ".join(f"#{ref}" for ref in deps) if deps else "无"))
+
+    with st.expander(f"事件时间线 ({len(store.touches(task.id))})"):
+        for touch in reversed(store.touches(task.id)):
+            st.code(
+                f"{touch.ts.isoformat()}  {touch.kind.value}"
+                + (f" · {touch.note}" if touch.note else ""),
+                language=None,
+            )
+
+
 def main() -> None:
     """Streamlit 入口：装配侧栏(add + -Xmx)与主区(堆图 / GC 日志 / 仪式 / 墓园)。
 
@@ -290,6 +389,13 @@ def main() -> None:
     """
     st.set_page_config(page_title="TodoGC · 堆内存", page_icon="🗑️", layout="wide")
     now = datetime.now(timezone.utc)
+    cfg = load_config()
+    policy = GCPolicy(
+        mode=cfg.gc_mode,
+        recent_days=cfg.recent_days,
+        max_skips=cfg.max_consecutive_skips,
+        restore_grace_days=cfg.restore_grace_days,
+    )
     store = Store(_db_path())
     try:
         with st.sidebar:
@@ -299,11 +405,21 @@ def main() -> None:
                 st.number_input("-Xmx（活跃堆上限）", min_value=1, value=_default_heap_max(), step=1)
             )
             full = st.checkbox("以 Full GC 视角渲染日志")
+            mode = st.selectbox(
+                "GC 策略", ["gentle", "normal", "aggressive"],
+                index=["gentle", "normal", "aggressive"].index(cfg.gc_mode),
+            )
+            policy = GCPolicy(
+                mode=mode,
+                recent_days=cfg.recent_days,
+                max_skips=cfg.max_consecutive_skips,
+                restore_grace_days=cfg.restore_grace_days,
+            )
             st.divider()
             _render_add(store, heap_max, now)
 
         st.title("堆内存快照 · jmap -heap")
-        result = _gc(store, now)
+        result = _gc(store, now, policy)
         roots = store.root_ids()
         _render_heap(result, roots, heap_max)
 
@@ -315,7 +431,18 @@ def main() -> None:
         _render_report(result, store, uptime=uptime, heap_max=heap_max, full=full)
 
         st.subheader("Stop-the-world 回收仪式")
-        _render_ceremony(store, result, now)
+        _render_ceremony(
+            store, result, now, mode=policy.mode, heap_before=store.heap_size()
+        )
+
+        st.subheader("任务详情 · history/edit/progress")
+        _render_task_manager(store, now)
+
+        st.subheader("Leak Inspector · doctor")
+        st.code(report.format_doctor(store, result, now=now), language=None)
+
+        st.subheader("GC 历史 · stats")
+        st.code(report.format_stats(store.gc_runs()), language=None)
 
         st.subheader("墓园 · graveyard")
         _render_graveyard(store, now)

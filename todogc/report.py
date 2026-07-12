@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 
 from todogc.collector import Candidate, GCResult, Reason
-from todogc.heap import TENURING_THRESHOLD, Generation, Task
+from todogc.heap import TENURING_THRESHOLD, Generation, State, Task, TouchKind
+from todogc.store import GCRun, Store
 
 
 def _fmt_uptime(td: timedelta | None) -> str:
@@ -141,7 +142,12 @@ def format_candidates(result: GCResult, *, views_of: Callable[[int], int] | None
             bits = []
             if c.metrics is not None:
                 bits.append(f"近期推进 {c.metrics.refcount_30d} 次")
-                bits.append(f"推迟 {c.metrics.skip_count} 次")
+                skips = (
+                    c.metrics.consecutive_skips
+                    if c.metrics.consecutive_skips is not None
+                    else c.metrics.skip_count
+                )
+                bits.append(f"连续推迟 {skips} 次")
             if views_of is not None and c.task.id is not None:
                 bits.append(f"看了 {views_of(c.task.id)} 次")
             suffix = f"  ({' · '.join(bits)})" if bits else ""
@@ -193,7 +199,7 @@ class HeapRow:
 
     task: Task
     kind: RowKind
-    candidate: Candidate | None
+    candidate: Candidate | None = None
 
 
 @dataclass
@@ -293,7 +299,12 @@ def candidate_note(cand: Candidate) -> str:
     if cand.reason is Reason.UNREACHABLE:
         return "unreachable"
     if cand.metrics is not None:
-        return f"stale · 推进{cand.metrics.refcount_30d} 推迟{cand.metrics.skip_count}"
+        skips = (
+            cand.metrics.consecutive_skips
+            if cand.metrics.consecutive_skips is not None
+            else cand.metrics.skip_count
+        )
+        return f"stale · 推进{cand.metrics.refcount_30d} 推迟{skips}"
     return "stale"
 
 
@@ -387,3 +398,100 @@ def format_report(
         str: GC 日志 + 空行 + 候选清单。
     """
     return format_gc_log(result, **log_kwargs) + "\n\n" + format_candidates(result, views_of=views_of)
+
+
+def format_doctor(store: Store, result: GCResult, *, now: datetime | None = None) -> str:
+    """生成认知内存泄漏诊断；只读，不产生 VIEW 事件。"""
+    now = now or datetime.now(timezone.utc)
+    candidates = {c.task.id: c for c in result.candidates}
+    roots = store.root_ids()
+    findings: list[tuple[int, Task, list[str], list[str]]] = []
+    for task in store.list_tasks(record_view=False):
+        if task.state is State.COLLECTED or task.id is None:
+            continue
+        views = store.view_count(task.id)
+        progress = store.refcount(task.id)
+        skips = store.consecutive_skip_count(task.id)
+        touches = store.touches(task.id)
+        churn = sum(t.kind in {TouchKind.COLLECT, TouchKind.RESTORE, TouchKind.REVIVE} for t in touches)
+        issues: list[str] = []
+        advice: list[str] = []
+        score = 0
+        if views >= 10 and progress == 0:
+            issues.append(f"查看 {views} 次但从未推进")
+            advice.append("把标题改成一个 30 分钟内可执行的动作")
+            score += min(40, views)
+        if skips >= 3:
+            issues.append(f"连续推迟 {skips} 次")
+            advice.append("立即推进一次，或承认它应被回收")
+            score += skips * 8
+        if task.gen is Generation.OLD and progress == 0:
+            issues.append(f"Old Generation age={task.age} 且零推进")
+            advice.append("降级为 weak reference")
+            score += 35
+        if churn >= 3:
+            issues.append(f"发生 {churn} 次回收/复活/恢复，疑似 GC thrashing")
+            advice.append("重新关联明确的 Root，或永久回收")
+            score += churn * 6
+        cand = candidates.get(task.id)
+        if cand is not None and cand.reason is Reason.CYCLE:
+            issues.append(f"位于不可达引用环 #{cand.cycle_id}")
+            advice.append("拆除循环理由依赖")
+            score += 50
+        elif cand is not None and cand.reason is Reason.UNREACHABLE:
+            issues.append("从所有活跃 Root 不可达")
+            advice.append("关联到真实目标，或立即回收")
+            score += 25
+        elif cand is not None and cand.reason is Reason.STALE:
+            issues.append("可达，但当前 GC 策略已判定为陈旧对象")
+            advice.append("记录真实推进、调整引用强度，或回收")
+            score += 20
+        if issues:
+            if task.id in roots:
+                issues.append("该对象本身是 GC Root")
+            findings.append((score, task, issues, list(dict.fromkeys(advice))))
+
+    if not findings:
+        return "[OK] 未发现明显的认知内存泄漏。"
+
+    lines = [f"[WARN] Suspected cognitive memory leaks: {len(findings)}"]
+    for score, task, issues, advice in sorted(findings, key=lambda x: (-x[0], x[1].id or 0)):
+        age_days = (now - task.created_at).days if task.created_at is not None else 0
+        lines.extend(
+            [
+                "",
+                f"  #{task.id} {task.title}",
+                f"  risk={score} · retained={age_days}d · ref={task.ref_strength.value}",
+                *(f"  ! {issue}" for issue in issues),
+                *(f"  → {tip}" for tip in advice),
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_stats(runs: list[GCRun]) -> str:
+    """汇总 GC 审计历史。"""
+    if not runs:
+        return "暂无 GC 历史。执行一次非 dry-run 的 `todogc gc` 后再来。"
+    total_candidates = sum(r.candidates for r in runs)
+    total_collected = sum(r.collected for r in runs)
+    total_revived = sum(r.revived for r in runs)
+    avg_release = sum(r.released_pct for r in runs) / len(runs)
+    avg_heap = sum(r.heap_before for r in runs) / len(runs)
+    revival_rate = 0.0 if total_candidates == 0 else 100 * total_revived / total_candidates
+    modes: dict[str, int] = {}
+    for run in runs:
+        modes[run.mode] = modes.get(run.mode, 0) + 1
+    mode_text = ", ".join(f"{k}={v}" for k, v in sorted(modes.items()))
+    return "\n".join(
+        [
+            "━━ GC 历史统计 ━━━━━━━━━━━━━━━━━━━",
+            f"  runs              : {len(runs)} ({mode_text})",
+            f"  average heap       : {avg_heap:.1f} obj",
+            f"  candidates         : {total_candidates}",
+            f"  collected / revived: {total_collected} / {total_revived}",
+            f"  average release    : {avg_release:.1f}%",
+            f"  revival rate       : {revival_rate:.1f}%",
+            f"  latest             : {runs[0].started_at.isoformat()}",
+        ]
+    )
