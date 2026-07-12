@@ -1,28 +1,27 @@
 # pyproject.toml —— 项目清单：元数据、构建后端、todogc 命令入口与工具配置。
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "todogc"
-version = "0.1.0"
+version = "0.2.0"
 description = "把待办清单当堆内存，用 GC 冷酷回收你永远不会做的僵尸任务。"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Anderson", email = "u3606584@connect.hku.hk" }]
 keywords = ["todo", "gc", "garbage-collection", "cli", "productivity"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Environment :: Console",
-    "License :: OSI Approved :: MIT License",
 ]
 # 核心零依赖：只用标准库(sqlite3 / argparse / dataclasses / datetime)。
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "build>=1.0"]  # build：python -m build 打 wheel/sdist
+dev = ["pytest>=7.0", "build>=1.0", "ruff>=0.8"]  # 测试、打包与静态检查
 color = ["rich>=13"]                 # 可选：装了才有彩色输出，核心不依赖它
 web = ["streamlit>=1.30"]            # 可选：Web 端堆内存图 + 交互(todogc web)
 

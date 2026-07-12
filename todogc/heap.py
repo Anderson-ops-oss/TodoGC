@@ -64,6 +64,14 @@ class Generation(str, Enum):
         return cls.OLD
 
 
+class ReferenceStrength(str, Enum):
+    """任务的保留强度：决定一个可达对象面对活跃度检查时有多难被回收。"""
+
+    STRONG = "strong"  # 可达即保留
+    SOFT = "soft"      # 默认：按近期有效活动与连续推迟判活
+    WEAK = "weak"      # 必须在时间窗内有真实推进
+
+
 class State(str, Enum):
     """任务在回收流程中的生命周期状态。"""
 
@@ -121,6 +129,7 @@ class Task:
     state: State = State.LIVE
     created_at: datetime | None = None
     id: int | None = None
+    ref_strength: ReferenceStrength = ReferenceStrength.SOFT
 
     @property
     def is_unlinked(self) -> bool:

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from todogc.heap import State, Task, TouchKind
+from todogc.heap import ReferenceStrength, State, Task, TouchKind
 
 if TYPE_CHECKING:  # 仅类型标注用，避免运行期 collector→store 的硬依赖
     from todogc.store import Store
@@ -26,6 +26,32 @@ class GCPolicy:
 
     recent_days: int = 30
     max_skips: int = 5
+    restore_grace_days: int = 7
+    mode: str = "normal"
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"gentle", "normal", "aggressive"}:
+            raise ValueError("GC mode 必须是 gentle / normal / aggressive")
+        if min(self.recent_days, self.max_skips, self.restore_grace_days) <= 0:
+            raise ValueError("GCPolicy 阈值必须大于 0")
+
+    @property
+    def effective_recent_days(self) -> int:
+        """按模式调整活跃时间窗。"""
+        if self.mode == "gentle":
+            return self.recent_days * 2
+        if self.mode == "aggressive":
+            return max(1, self.recent_days // 2)
+        return self.recent_days
+
+    @property
+    def effective_max_skips(self) -> int:
+        """按模式调整连续推迟容忍度。"""
+        if self.mode == "gentle":
+            return self.max_skips + 2
+        if self.mode == "aggressive":
+            return max(1, self.max_skips - 2)
+        return self.max_skips
 
 
 @dataclass
@@ -42,6 +68,9 @@ class TaskMetrics:
     refcount_30d: int
     skip_count: int
     days_since_touch: float | None
+    consecutive_skips: int | None = None
+    days_since_progress: float | None = None
+    days_since_restore: float | None = None
 
 
 class Reason(str, Enum):
@@ -167,13 +196,14 @@ class Collector:
                     )
             else:
                 m = metrics_of(tid)
-                if self._metrics_alive(m):
+                if self._metrics_alive(task, m):
                     result.survivors.append(task)
                 else:
                     result.candidates.append(
                         Candidate(task, Reason.STALE, metrics=m,
-                                  detail=f"可达但已死：近 {self.policy.recent_days} 天推进 "
-                                         f"{m.refcount_30d} 次，累计推迟 {m.skip_count} 次")
+                                  detail=f"可达但已死：近 {self.policy.effective_recent_days} 天推进 "
+                                         f"{m.refcount_30d} 次，连续推迟 "
+                                         f"{m.consecutive_skips if m.consecutive_skips is not None else m.skip_count} 次")
                     )
         return result
 
@@ -214,18 +244,50 @@ class Collector:
             edges[a].add(b)
 
         def metrics_of(tid: int) -> TaskMetrics:
+            touches = store.touches(tid)
+            effective_kinds = {
+                TouchKind.CREATE, TouchKind.PROGRESS, TouchKind.EDIT,
+                TouchKind.LINK, TouchKind.REVIVE, TouchKind.RESTORE,
+            }
             last = max(
-                (tc.ts for tc in store.touches(tid) if tc.kind is not TouchKind.VIEW),
+                (tc.ts for tc in touches if tc.kind in effective_kinds),
                 default=None,
             )
             days = None if last is None else (now - last).total_seconds() / 86400.0
+            last_progress = max((tc.ts for tc in touches if tc.kind.is_progress), default=None)
+            progress_days = None if last_progress is None else (now - last_progress).total_seconds() / 86400.0
+            last_restore = max(
+                (tc.ts for tc in touches if tc.kind in {TouchKind.REVIVE, TouchKind.RESTORE}),
+                default=None,
+            )
+            restore_days = None if last_restore is None else (now - last_restore).total_seconds() / 86400.0
             return TaskMetrics(
-                refcount_30d=store.refcount(tid, within_days=self.policy.recent_days, now=now),
+                refcount_30d=store.refcount(tid, within_days=self.policy.effective_recent_days, now=now),
                 skip_count=store.skip_count(tid),
                 days_since_touch=days,
+                consecutive_skips=store.consecutive_skip_count(tid),
+                days_since_progress=progress_days,
+                days_since_restore=restore_days,
             )
 
-        return self.collect(tasks, set(root_ids), dict(edges), metrics_of)
+        # 刚复活/恢复的孤儿在宽限期内作为临时 GC root，避免下一轮立即再次回收；
+        # 宽限期结束后若仍未重连，会自然回到不可达候选。
+        root_set = set(root_ids)
+        for tid in tasks:
+            last_restore = max(
+                (
+                    tc.ts
+                    for tc in store.touches(tid)
+                    if tc.kind in {TouchKind.REVIVE, TouchKind.RESTORE}
+                ),
+                default=None,
+            )
+            if last_restore is not None:
+                age_days = (now - last_restore).total_seconds() / 86400.0
+                if age_days < self.policy.restore_grace_days:
+                    root_set.add(tid)
+
+        return self.collect(tasks, root_set, dict(edges), metrics_of)
 
     # ---- 内部：mark / cycle / 判活 ----
 
@@ -321,7 +383,7 @@ class Collector:
                 cycles.append(Cycle(id=len(cycles), task_ids=sorted(comp)))
         return cycles
 
-    def _metrics_alive(self, m: TaskMetrics) -> bool:
+    def _metrics_alive(self, task: Task, m: TaskMetrics) -> bool:
         """按判活公式判断"指标是否还活着"(可达之外的第二道门槛)。
 
         alive = (最近碰过 或 近 N 天有真推进) 且 推迟未超阈值。
@@ -332,6 +394,17 @@ class Collector:
         Returns:
             bool: 存活为 True。
         """
-        recent = m.days_since_touch is not None and m.days_since_touch < self.policy.recent_days
+        if task.ref_strength is ReferenceStrength.STRONG:
+            return True
+        skips = m.consecutive_skips if m.consecutive_skips is not None else m.skip_count
+        if m.days_since_restore is not None and m.days_since_restore < self.policy.restore_grace_days:
+            return True
+        if task.ref_strength is ReferenceStrength.WEAK:
+            recent_progress = (
+                m.days_since_progress is not None
+                and m.days_since_progress < self.policy.effective_recent_days
+            )
+            return recent_progress and skips < self.policy.effective_max_skips
+        recent = m.days_since_touch is not None and m.days_since_touch < self.policy.effective_recent_days
         progressed = m.refcount_30d > 0
-        return (recent or progressed) and m.skip_count < self.policy.max_skips
+        return (recent or progressed) and skips < self.policy.effective_max_skips

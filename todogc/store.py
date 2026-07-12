@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
+import shutil
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from todogc.heap import Generation, State, Task, Touch, TouchKind
+from todogc.heap import Generation, ReferenceStrength, State, Task, Touch, TouchKind
 
 # 计入 refcount 的事件类型值：复用 TouchKind.is_progress 这一单一口径，不在此重复定义。
 _PROGRESS_KIND_VALUES: tuple[str, ...] = tuple(k.value for k in TouchKind if k.is_progress)
@@ -42,6 +44,23 @@ CREATE TABLE IF NOT EXISTS dep (
 CREATE INDEX IF NOT EXISTS idx_touch_task ON touch(task_id);
 """
 
+_SCHEMA_VERSION = 3
+
+
+@dataclass(frozen=True)
+class GCRun:
+    """一次已实际执行的 GC 审计记录。"""
+
+    id: int
+    started_at: datetime
+    mode: str
+    heap_before: int
+    survivors: int
+    candidates: int
+    collected: int
+    revived: int
+    released_pct: float
+
 
 class Store:
     """TodoGC 的持久化门面：包一层 SQLite，对外只暴露 Task / Touch 语义，隐藏 SQL 细节。"""
@@ -55,10 +74,12 @@ class Store:
         Returns:
             None
         """
-        self._conn = sqlite3.connect(str(path))
+        self.path = str(path)
+        existed = self.path != ":memory:" and Path(self.path).exists()
+        self._conn = sqlite3.connect(self.path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
-        self._init_schema()
+        self._init_schema(existed=existed)
 
     # ---- 资源管理 ----
 
@@ -94,14 +115,69 @@ class Store:
 
     # ---- 内部工具 ----
 
-    def _init_schema(self) -> None:
+    def _init_schema(self, *, existed: bool = False) -> None:
         """执行建表语句(幂等，IF NOT EXISTS)。
 
         Returns:
             None
         """
         self._conn.executescript(_SCHEMA)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        row = self._conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        version = int(row[0]) if row is not None else 1
+        if version < _SCHEMA_VERSION and existed:
+            self._conn.commit()
+            shutil.copy2(self.path, self.path + ".bak")
+        if version < 2:
+            columns = {r[1] for r in self._conn.execute("PRAGMA table_info(task)").fetchall()}
+            if "ref_strength" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE task ADD COLUMN ref_strength TEXT NOT NULL DEFAULT 'soft'"
+                )
+            version = 2
+        if version < 3:
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS gc_run (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    started_at   TEXT NOT NULL,
+                    mode         TEXT NOT NULL,
+                    heap_before  INTEGER NOT NULL,
+                    survivors    INTEGER NOT NULL,
+                    candidates   INTEGER NOT NULL,
+                    collected    INTEGER NOT NULL DEFAULT 0,
+                    revived      INTEGER NOT NULL DEFAULT 0,
+                    released_pct REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS gc_run_item (
+                    run_id  INTEGER NOT NULL REFERENCES gc_run(id) ON DELETE CASCADE,
+                    task_id INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+                    reason  TEXT NOT NULL,
+                    action  TEXT NOT NULL,
+                    PRIMARY KEY (run_id, task_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_gc_run_started ON gc_run(started_at);
+                """
+            )
+            version = 3
+        self._conn.execute(
+            "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(version),),
+        )
         self._conn.commit()
+
+    @property
+    def schema_version(self) -> int:
+        """当前数据库 schema 版本。"""
+        row = self._conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        return int(row[0])
 
     @staticmethod
     def _now() -> datetime:
@@ -152,6 +228,7 @@ class Store:
             id=row["id"],
             title=row["title"],
             root_id=row["root_id"],
+            ref_strength=ReferenceStrength(row["ref_strength"]),
             gen=Generation(row["gen"]),
             age=row["age"],
             state=State(row["state"]),
@@ -185,6 +262,7 @@ class Store:
         root_id: int | None = None,
         is_root: bool = False,
         meta: bool = False,
+        ref_strength: ReferenceStrength | str = ReferenceStrength.SOFT,
         ts: datetime | None = None,
     ) -> Task:
         """新增(分配)一个任务，并记一条 CREATE 触碰事件。
@@ -199,13 +277,19 @@ class Store:
         Returns:
             Task: 已落库、带自增 id 与 created_at 的任务对象。
         """
+        title = title.strip()
+        if not title:
+            raise ValueError("任务标题不能为空")
         now = ts or self._now()
+        strength = ReferenceStrength(ref_strength)
+        if root_id is not None:
+            self._require_live_task(root_id)
         iso = self._to_iso(now)
         gen = Generation.META if meta else Generation.EDEN
         cur = self._conn.execute(
-            "INSERT INTO task (title, root_id, is_root, gen, age, state, created_at) "
-            "VALUES (?, ?, ?, ?, 0, ?, ?)",
-            (title, root_id, int(is_root), gen.value, State.LIVE.value, iso),
+            "INSERT INTO task (title, root_id, is_root, gen, age, state, created_at, ref_strength) "
+            "VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
+            (title, root_id, int(is_root), gen.value, State.LIVE.value, iso, strength.value),
         )
         task_id = int(cur.lastrowid)
         self.record(task_id, TouchKind.CREATE, ts=now)
@@ -214,6 +298,7 @@ class Store:
             id=task_id,
             title=title,
             root_id=root_id,
+            ref_strength=strength,
             gen=gen,
             age=0,
             state=State.LIVE,
@@ -259,6 +344,7 @@ class Store:
         Returns:
             Touch: 新记录的触碰事件。
         """
+        self._require_live_task(task_id)
         return self.record(task_id, TouchKind.PROGRESS, note=note, ts=ts)
 
     def defer(self, task_id: int, note: str | None = None, ts: datetime | None = None) -> Touch:
@@ -272,6 +358,7 @@ class Store:
         Returns:
             Touch: 新记录的触碰事件。
         """
+        self._require_live_task(task_id)
         return self.record(task_id, TouchKind.DEFER, note=note, ts=ts)
 
     def link(self, task_id: int, root_id: int, ts: datetime | None = None) -> None:
@@ -285,6 +372,10 @@ class Store:
         Returns:
             None
         """
+        if task_id == root_id:
+            raise ValueError("一个任务不能关联到自己")
+        self._require_live_task(task_id)
+        self._require_live_task(root_id)
         self._conn.execute("UPDATE task SET root_id = ? WHERE id = ?", (root_id, task_id))
         self.record(task_id, TouchKind.LINK, ts=ts)
         self._conn.commit()
@@ -307,10 +398,51 @@ class Store:
         if task.id is None:
             raise ValueError("update_task 需要一个已落库(id 非空)的 Task")
         self._conn.execute(
-            "UPDATE task SET title = ?, root_id = ?, gen = ?, age = ?, state = ? WHERE id = ?",
-            (task.title, task.root_id, task.gen.value, task.age, task.state.value, task.id),
+            "UPDATE task SET title = ?, root_id = ?, gen = ?, age = ?, state = ?, ref_strength = ? WHERE id = ?",
+            (
+                task.title, task.root_id, task.gen.value, task.age, task.state.value,
+                task.ref_strength.value, task.id,
+            ),
         )
         self._conn.commit()
+
+    def edit_task(
+        self,
+        task_id: int,
+        *,
+        title: str | None = None,
+        ref_strength: ReferenceStrength | str | None = None,
+        ts: datetime | None = None,
+    ) -> Task:
+        """编辑标题和/或引用强度，并写入 EDIT 事件。"""
+        task = self._require_live_task(task_id)
+        if title is not None:
+            title = title.strip()
+            if not title:
+                raise ValueError("任务标题不能为空")
+            task.title = title
+        if ref_strength is not None:
+            task.ref_strength = ReferenceStrength(ref_strength)
+        self.update_task(task)
+        self.record(task_id, TouchKind.EDIT, note=title, ts=ts)
+        return task
+
+    def unlink(self, task_id: int, ts: datetime | None = None) -> None:
+        """解除父/目标关联；用 LINK 事件记录审计说明。"""
+        self._require_live_task(task_id)
+        self._conn.execute("UPDATE task SET root_id = NULL WHERE id = ?", (task_id,))
+        self.record(task_id, TouchKind.LINK, note="unlink", ts=ts)
+        self._conn.commit()
+
+    def _require_live_task(self, task_id: int) -> Task:
+        """取存活任务，否则抛出面向用户的 ValueError。"""
+        row = self._conn.execute("SELECT * FROM task WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"任务 #{task_id} 不存在")
+        task = self._row_to_task(row)
+        if task.state is State.COLLECTED:
+            raise ValueError(f"任务 #{task_id} 已回收，请先 restore")
+        return task
 
     # ---- roots 与"理由"边(方案 A) ----
 
@@ -324,6 +456,7 @@ class Store:
         Returns:
             None
         """
+        self._require_live_task(task_id)
         self._conn.execute("UPDATE task SET is_root = ? WHERE id = ?", (int(is_root), task_id))
         self._conn.commit()
 
@@ -353,9 +486,8 @@ class Store:
         """
         if task_id == ref_id:
             raise ValueError("一个任务不能把自己当理由(不允许自环)")
-        for tid in (task_id, ref_id):
-            if self._conn.execute("SELECT 1 FROM task WHERE id = ?", (tid,)).fetchone() is None:
-                raise ValueError(f"任务 #{tid} 不存在")
+        self._require_live_task(task_id)
+        self._require_live_task(ref_id)
         self._conn.execute(
             "INSERT OR IGNORE INTO dep (task_id, ref_id) VALUES (?, ?)", (task_id, ref_id)
         )
@@ -523,6 +655,21 @@ class Store:
         """
         return self._count_touches(task_id, (TouchKind.DEFER.value,))
 
+    def consecutive_skip_count(self, task_id: int) -> int:
+        """最后一次推进/编辑/复活/恢复之后的连续 DEFER 数。"""
+        reset = {
+            TouchKind.PROGRESS, TouchKind.EDIT, TouchKind.REVIVE, TouchKind.RESTORE,
+        }
+        count = 0
+        for touch in reversed(self.touches(task_id)):
+            if touch.kind in reset:
+                break
+            if touch.kind is TouchKind.DEFER:
+                count += 1
+            elif touch.kind not in {TouchKind.VIEW, TouchKind.LINK, TouchKind.CREATE}:
+                break
+        return count
+
     def view_count(self, task_id: int) -> int:
         """任务被查看(VIEW)的累计次数——通常远大于 refcount，是打脸金句的弹药。
 
@@ -553,3 +700,56 @@ class Store:
             params = [task_id]
         row = self._conn.execute(sql, params).fetchone()
         return self._from_iso(row[0]) if row and row[0] is not None else None
+
+    # ---- GC 审计历史 ----
+
+    def record_gc_run(
+        self,
+        *,
+        started_at: datetime,
+        mode: str,
+        heap_before: int,
+        survivors: int,
+        candidates: int,
+        collected: int,
+        revived: int,
+        released_pct: float,
+        items: list[tuple[int, str, str]] | None = None,
+    ) -> int:
+        """记录一次真正执行的 GC；item 为 ``(task_id, reason, action)``。"""
+        cur = self._conn.execute(
+            "INSERT INTO gc_run(started_at, mode, heap_before, survivors, candidates, collected, revived, released_pct) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self._to_iso(started_at), mode, heap_before, survivors, candidates,
+                collected, revived, released_pct,
+            ),
+        )
+        run_id = int(cur.lastrowid)
+        if items:
+            self._conn.executemany(
+                "INSERT INTO gc_run_item(run_id, task_id, reason, action) VALUES (?, ?, ?, ?)",
+                [(run_id, task_id, reason, action) for task_id, reason, action in items],
+            )
+        self._conn.commit()
+        return run_id
+
+    def gc_runs(self, *, since_days: int | None = None, now: datetime | None = None) -> list[GCRun]:
+        """读取 GC 历史，最近的在前。"""
+        sql = "SELECT * FROM gc_run"
+        params: list[object] = []
+        if since_days is not None:
+            cutoff = (now or self._now()) - timedelta(days=since_days)
+            sql += " WHERE started_at >= ?"
+            params.append(self._to_iso(cutoff))
+        sql += " ORDER BY started_at DESC, id DESC"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            GCRun(
+                id=int(r["id"]), started_at=self._from_iso(r["started_at"]), mode=r["mode"],
+                heap_before=int(r["heap_before"]), survivors=int(r["survivors"]),
+                candidates=int(r["candidates"]), collected=int(r["collected"]),
+                revived=int(r["revived"]), released_pct=float(r["released_pct"]),
+            )
+            for r in rows
+        ]

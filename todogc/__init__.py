@@ -11,10 +11,19 @@ from todogc.collector import (
     Reason,
     TaskMetrics,
 )
-from todogc.heap import TENURING_THRESHOLD, Generation, State, Task, Touch, TouchKind
-from todogc.store import Store
+from todogc.config import AppConfig, ConfigError, load_config
+from todogc.heap import (
+    TENURING_THRESHOLD,
+    Generation,
+    ReferenceStrength,
+    State,
+    Task,
+    Touch,
+    TouchKind,
+)
+from todogc.store import GCRun, Store
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",
@@ -23,10 +32,16 @@ __all__ = [
     "Touch",
     "TouchKind",
     "Generation",
+    "ReferenceStrength",
     "State",
     "TENURING_THRESHOLD",
     # store
     "Store",
+    "GCRun",
+    # config
+    "AppConfig",
+    "ConfigError",
+    "load_config",
     # collector
     "Collector",
     "GCPolicy",
