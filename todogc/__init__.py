@@ -21,9 +21,11 @@ from todogc.heap import (
     Touch,
     TouchKind,
 )
+from todogc.notify import NotifyError, NtfyChannel
 from todogc.store import GCRun, Store
+from todogc.watcher import TickEvent, TickResult, Watcher, run_tick
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "__version__",
@@ -50,4 +52,12 @@ __all__ = [
     "Cycle",
     "Reason",
     "TaskMetrics",
+    # notify
+    "NotifyError",
+    "NtfyChannel",
+    # watcher
+    "Watcher",
+    "TickEvent",
+    "TickResult",
+    "run_tick",
 ]

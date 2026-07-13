@@ -44,7 +44,23 @@ CREATE TABLE IF NOT EXISTS dep (
 CREATE INDEX IF NOT EXISTS idx_touch_task ON touch(task_id);
 """
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
+
+
+@dataclass(frozen=True)
+class WatchState:
+    """某任务在上一轮 ``todogc watch`` tick 里的判定状态与去抖时间戳。
+
+    Attributes:
+        task_id (int): 任务 id。
+        status (str): 上一轮判定状态("alive" 或 collector.Reason 的值)。
+        notified_at (datetime | None): 最近一次为该任务当前状态发过事件推送的时间；
+            None 表示该状态自出现以来还没推送过(或从未记录)。
+    """
+
+    task_id: int
+    status: str
+    notified_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -164,6 +180,21 @@ class Store:
                 """
             )
             version = 3
+        if version < 4:
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS watch_state (
+                    task_id     INTEGER PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE,
+                    status      TEXT NOT NULL,
+                    notified_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS watch_meta (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """
+            )
+            version = 4
         self._conn.execute(
             "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -764,3 +795,129 @@ class Store:
             )
             for r in rows
         ]
+
+    # ---- 定时体检(watch)：状态去抖 + 单实例建议性锁 ----
+
+    def watch_states(self) -> dict[int, WatchState]:
+        """读取全部任务上一轮 watch tick 记录的状态，供本轮 diff 出"跃迁"用。
+
+        Returns:
+            dict[int, WatchState]: task_id → 上一轮状态；从未跑过 watch 的任务不在其中。
+        """
+        rows = self._conn.execute("SELECT task_id, status, notified_at FROM watch_state").fetchall()
+        return {
+            int(r["task_id"]): WatchState(
+                task_id=int(r["task_id"]),
+                status=r["status"],
+                notified_at=self._from_iso(r["notified_at"]) if r["notified_at"] is not None else None,
+            )
+            for r in rows
+        }
+
+    def record_watch_tick(self, task_id: int, status: str, *, notified_at: datetime | None = None) -> None:
+        """记录本轮 tick 里某任务的判定状态；仅当本轮确实为它推送过事件才顺带盖去抖时间戳。
+
+        Args:
+            task_id (int): 任务 id。
+            status (str): 本轮判定状态("alive" 或 collector.Reason 的值)。
+            notified_at (datetime | None): 本轮为该任务发过事件推送则传推送时间；
+                否则传 None，保留上一次的 notified_at 不变(不代表"未推送过"要清零)。
+
+        Returns:
+            None
+        """
+        if notified_at is None:
+            self._conn.execute(
+                "INSERT INTO watch_state(task_id, status, notified_at) VALUES (?, ?, NULL) "
+                "ON CONFLICT(task_id) DO UPDATE SET status = excluded.status",
+                (task_id, status),
+            )
+        else:
+            self._conn.execute(
+                "INSERT INTO watch_state(task_id, status, notified_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(task_id) DO UPDATE SET status = excluded.status, notified_at = excluded.notified_at",
+                (task_id, status, self._to_iso(notified_at)),
+            )
+        self._conn.commit()
+
+    def watch_meta_get(self, key: str) -> str | None:
+        """读取一条 watch_meta 键值(如 last_digest_at)。
+
+        Args:
+            key (str): 键名。
+
+        Returns:
+            str | None: 对应值；不存在时 None。
+        """
+        row = self._conn.execute("SELECT value FROM watch_meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row is not None else None
+
+    def watch_meta_set(self, key: str, value: str) -> None:
+        """写入(新增或覆盖)一条 watch_meta 键值(如 last_digest_at)。
+
+        Args:
+            key (str): 键名。
+            value (str): 值。
+
+        Returns:
+            None
+        """
+        self._conn.execute(
+            "INSERT INTO watch_meta(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        self._conn.commit()
+
+    def try_acquire_watch_lock(self, pid: int, now: datetime, *, stale_after: timedelta) -> bool:
+        """尝试拿到"本进程是这个库唯一 watcher"的建议性锁(不是数据库级互斥锁，只是约定)。
+
+        没有锁记录、或已有锁的心跳早于 ``stale_after``(判定持锁进程已死)时，本进程接管成功；
+        若已有别的、心跳仍新鲜的 watcher 持锁，返回 False，调用方应放弃启动、避免重复推送。
+
+        Args:
+            pid (int): 本进程 pid。
+            now (datetime): 当前时间。
+            stale_after (timedelta): 心跳早于此时长即判定锁已过期，允许被接管。
+
+        Returns:
+            bool: True 表示已拿到(或续期)锁；False 表示另一个 watcher 仍存活，本进程应放弃。
+        """
+        heartbeat_raw = self.watch_meta_get("watch_lock_heartbeat_at")
+        if heartbeat_raw is not None and now - self._from_iso(heartbeat_raw) < stale_after:
+            owner_raw = self.watch_meta_get("watch_lock_pid")
+            if owner_raw is not None and int(owner_raw) != pid:
+                return False
+        self.watch_meta_set("watch_lock_pid", str(pid))
+        self.watch_meta_set("watch_lock_heartbeat_at", self._to_iso(now))
+        return True
+
+    def heartbeat_watch_lock(self, pid: int, now: datetime) -> None:
+        """续期本进程持有的 watch 锁(仅当锁确实属于本 pid 时才生效)。
+
+        Args:
+            pid (int): 本进程 pid。
+            now (datetime): 当前时间。
+
+        Returns:
+            None
+        """
+        owner_raw = self.watch_meta_get("watch_lock_pid")
+        if owner_raw is not None and int(owner_raw) == pid:
+            self.watch_meta_set("watch_lock_heartbeat_at", self._to_iso(now))
+
+    def release_watch_lock(self, pid: int) -> None:
+        """主动释放本进程持有的 watch 锁(仅当锁确实属于本 pid 时才生效)，供优雅退出时调用。
+
+        Args:
+            pid (int): 本进程 pid。
+
+        Returns:
+            None
+        """
+        owner_raw = self.watch_meta_get("watch_lock_pid")
+        if owner_raw is not None and int(owner_raw) == pid:
+            self._conn.execute(
+                "DELETE FROM watch_meta WHERE key IN ('watch_lock_pid', 'watch_lock_heartbeat_at')"
+            )
+            self._conn.commit()

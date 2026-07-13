@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import html
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from todogc import report
 from todogc.cli import HEAP_MAX, run_ceremony  # 共享的 -Xmx 默认与回收仪式纯逻辑核心
 from todogc.collector import Collector, GCPolicy, GCResult
-from todogc.config import load_config
+from todogc.config import AppConfig, load_config
 from todogc.heap import ReferenceStrength, State, TouchKind
 from todogc.report import HeapRow, RowKind
 from todogc.store import Store
+from todogc.watcher import Watcher
 
 if TYPE_CHECKING:
     import streamlit as st  # pyright: ignore[reportMissingImports]
@@ -30,6 +32,29 @@ else:
         st = None
         _st_runtime_exists = None
         _HAVE_STREAMLIT = False
+
+
+def _start_watcher(db_path: str, config: AppConfig) -> Watcher:
+    """启动一条后台体检 daemon 线程(真正的"只起一条"由下面 st.cache_resource 包装保证)。
+
+    Streamlit 每次 rerun 都会重新跑到这一行，若不用 st.cache_resource 包一层，
+    每次交互都会新开一条线程——这里只是线程本体，缓存单例化在模块底部按
+    _HAVE_STREAMLIT 条件包装，避免没装 streamlit 时对 st.cache_resource 的裸引用报错。
+
+    Args:
+        db_path (str): 要体检的数据库路径。
+        config (AppConfig): 含 notify.*/watch.* 配置；调用方需确保 ntfy_enabled 为 True。
+
+    Returns:
+        Watcher: 已启动(daemon 线程在跑)的 watcher；随 streamlit 子进程一起终止，无需手动停止。
+    """
+    watcher = Watcher(db_path, config)
+    threading.Thread(target=watcher.run, name="todogc-watch", daemon=True).start()
+    return watcher
+
+
+if _HAVE_STREAMLIT:
+    _start_watcher = st.cache_resource(show_spinner=False)(_start_watcher)
 
 
 # RowKind → HTML 颜色(与 CLI 的 rich 主题对齐：root 描金、僵尸红、元任务品红)。
@@ -414,6 +439,11 @@ def main() -> None:
         with st.sidebar:
             st.title("🗑️ TodoGC")
             st.caption(f"DB：`{_db_path()}`")
+            if cfg.ntfy_enabled:
+                _start_watcher(_db_path(), cfg)
+                st.caption(f"🔔 后台体检运行中 · 每 {cfg.watch_poll_seconds}s · ntfy `{cfg.ntfy_topic}`")
+            else:
+                st.caption("🔕 未配置 [notify]，后台定时体检未启用")
             heap_max = int(
                 st.number_input("-Xmx（活跃堆上限）", min_value=1, value=_default_heap_max(), step=1)
             )

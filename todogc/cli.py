@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import signal
 import subprocess
 import sys
 from collections.abc import Callable
@@ -13,9 +14,10 @@ from datetime import datetime, timezone
 
 from todogc import console, report
 from todogc.collector import Candidate, Collector, GCPolicy, GCResult
-from todogc.config import ConfigError, load_config
+from todogc.config import AppConfig, ConfigError, load_config
 from todogc.heap import ReferenceStrength, State, TouchKind
 from todogc.store import Store
+from todogc.watcher import Watcher
 
 HEAP_MAX = 50  # -Xmx：你能同时扛的任务数上限，仅用于 GC 日志展示。
 
@@ -96,7 +98,7 @@ def run_ceremony(
             out.collected.append(task.id)
         elif choice == "revive":
             if task.is_unlinked and revive_root is not None:
-                r = revive_root(cand) if callable(revive_root) else revive_root
+                r = revive_root if isinstance(revive_root, int) else revive_root(cand)
                 if r is not None:
                     store.link(task.id, r, ts=now)
                     task.root_id = r
@@ -429,6 +431,42 @@ def cmd_web(store: Store, args: argparse.Namespace) -> int:
     return subprocess.run(cmd, env=env).returncode
 
 
+def cmd_watch(store: Store, args: argparse.Namespace) -> int:
+    """watch：定时体检 —— 轮询判活，状态跃迁/心跳摘要/堆占用告警时推送 ntfy 通知。
+
+    Watcher 自己开一条独立的 Store 连接跑循环(与 main() 统一开的 store 无关，同 cmd_web
+    对待 store 参数的方式)。Ctrl-C(SIGINT)或 SIGTERM 都会让循环在下一个心跳片(≤30s)
+    结束后优雅退出并释放单实例锁。
+
+    Args:
+        store (Store): 数据源(本命令不用，仅为子命令签名统一)。
+        args (argparse.Namespace): 需含 db 与 app_config(main() 里加载的完整 AppConfig)。
+
+    Returns:
+        int: 退出码；notify.ntfy_enabled 未开启/未配置 ntfy_topic 时返回 1。
+    """
+    cfg: AppConfig = args.app_config
+    if not cfg.ntfy_enabled:
+        print(
+            "未开启定时体检推送 —— 先在 todogc.toml 配置：\n"
+            "  [notify]\n"
+            "  ntfy_enabled = true\n"
+            '  ntfy_topic = "你的-topic"\n'
+            "再跑 todogc watch",
+            file=sys.stderr,
+        )
+        return 1
+    watcher = Watcher(args.db, cfg)
+    signal.signal(signal.SIGTERM, lambda signum, frame: watcher.stop())
+    print(f"todogc watch 启动(库 {args.db} · 每 {cfg.watch_poll_seconds}s 体检一次) —— Ctrl-C 停止")
+    try:
+        watcher.run()
+    except KeyboardInterrupt:
+        pass
+    print("todogc watch 已停止")
+    return 0
+
+
 def cmd_graveyard(store: Store, args: argparse.Namespace) -> int:
     """graveyard：悼词墙，列出已回收任务的墓志铭与遗言。
 
@@ -669,6 +707,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=None, help="Web 端端口(默认 streamlit 的 8501)")
     p.set_defaults(func=cmd_web)
 
+    p = sub.add_parser("watch", help="定时体检，状态跃迁/堆占用告警时推送 ntfy(需 [notify] 配置)")
+    p.set_defaults(func=cmd_watch)
+
     p = sub.add_parser("graveyard", help="悼词墙")
     p.set_defaults(func=cmd_graveyard)
 
@@ -732,6 +773,7 @@ def main(argv: list[str] | None = None) -> int:
             max_skips=max_skips,
             restore_grace_days=grace,
         )
+        args.app_config = cfg  # 完整配置(含 notify.*/watch.*)，watch 子命令要用；其余命令忽略。
     except (ConfigError, ValueError) as exc:
         print(f"✗ 配置错误：{exc}", file=sys.stderr)
         return 2

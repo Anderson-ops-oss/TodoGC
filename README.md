@@ -53,6 +53,7 @@ todogc dep 4 3                               # #4 的理由是 #3 —— 成环
 todogc ls                                    # 看看你的堆
 todogc heap                                  # 堆内存图：分代分布 + -Xmx 占用 + 僵尸标红(别名 jmap)
 todogc web                                   # 把这张堆图搬进浏览器 + 交互(需 [web]，见下)
+todogc watch                                 # 定时体检：状态跃迁/堆占用告警时推 ntfy(需 [notify]，见下)
 todogc gc                                    # 触发回收 + Stop-the-world 仪式
 todogc gc --dry-run                          # 只出报告，不进仪式
 todogc graveyard                             # 悼词墙：看看你都埋了什么
@@ -142,6 +143,38 @@ max = 50
 数据库会自动从旧版迁移到 schema v3；迁移文件库前先生成同目录 `.bak`。真实执行的 GC
 写入审计历史，`heap` 与 `gc --dry-run` 始终只读。
 
+## v0.3：定时体检(ntfy 推送)
+
+`todogc watch` 让判活不用你手动敲命令去看——按 `todogc.toml` 的 `[notify]`/`[watch]` 配置
+（完整字段见 `todogc.toml.example`），轮询判活、状态跃迁时推 [ntfy](https://ntfy.sh) 通知：
+
+```toml
+[notify]
+ntfy_enabled = true
+ntfy_topic = "你的-topic"        # 建议自建一个不容易被猜到的 topic 名；受保护 topic 才需要 ntfy_token
+
+[watch]
+poll_seconds = 1800              # 多久判活一次
+digest_seconds = 86400           # 没有新事件也定期报个平安
+remind_days = 7                  # 候选状态没变时，隔多少天再提醒一次
+heap_threshold_pct = 80          # 堆占用告警阈值(%)
+```
+
+推送是**事件驱动**的，不是心跳污染——参考真实 JVM 只在实际发生一次 GC 时才打日志，
+`todogc watch` 只在下列"跃迁"发生时才推(候选数量不变、状态没变一律静默)：
+
+- 任务从存活跃迁为候选(新僵尸 / 新孤儿 / 新循环引用)。
+- 候选状态本身发生变化(比如从 stale 变成陷入循环引用)。
+- 同一候选状态持续太久(超过 `remind_days` 没处理)，复议期到，再提醒一次。
+- 堆占用**新跨过** `heap_threshold_pct` 那一刻(持续高位不会重复告警)。
+
+复活回到存活会静默清空去抖记录(这是好消息，不推送，但下次再堕落会被当"新"跃迁重新提醒)。
+另外每隔 `digest_seconds` 会发一条心跳摘要，证明 watcher 还活着，不必疑神疑鬼。
+
+`todogc watch` 起一个单实例建议性锁——如果你已经在跑 `todogc web`(且配了
+`notify.ntfy_enabled`)，它会在 web 服务进程里自动带一条同款后台线程，此时再手动开
+`todogc watch` 会检测到锁被占用、自动放弃，不会对同一份跃迁重复推送两遍。
+
 ## 判活规则
 
 一个任务判为**存活**，当且仅当：
@@ -166,8 +199,10 @@ todogc/
   store.py      SQLite 持久化 + 自动埋点 + 判活指标
   collector.py  可达性标记 + Tarjan 抓环 + 判活清除
   report.py     JVM 风格 GC 日志 + 堆内存图(heap_view 视图模型，CLI/Web 共用) + 候选 + 打脸
-  cli.py        命令行 + Stop-the-world 回收仪式
-  webapp.py     Streamlit Web 端(堆内存图 + add/gc/restore 交互，可选)
+  notify.py     ntfy 推送渠道(JSON 发布，零依赖，纯 urllib)
+  watcher.py    定时体检核心：事件驱动 + 去抖 + 心跳摘要 + 单实例建议性锁
+  cli.py        命令行 + Stop-the-world 回收仪式 + todogc watch
+  webapp.py     Streamlit Web 端(堆内存图 + add/gc/restore 交互 + 自动挂载 watcher，可选)
 ```
 
 ## 测试
@@ -185,8 +220,8 @@ pytest
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # 产出 dist/todogc-0.2.0-py3-none-any.whl 与 .tar.gz
-pip install dist/todogc-0.2.0-py3-none-any.whl   # 到哪都能装
+python -m build          # 产出 dist/todogc-0.3.0-py3-none-any.whl 与 .tar.gz
+pip install dist/todogc-0.3.0-py3-none-any.whl   # 到哪都能装
 ```
 
 `dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。
@@ -199,7 +234,10 @@ pip install dist/todogc-0.2.0-py3-none-any.whl   # 到哪都能装
 gentle/normal/aggressive、show/edit/history/link、doctor、GC 历史 stats、Web 任务详情与
 Leak Inspector、输入校验与对抗测试。
 
-**后续候选（欢迎 PR）**：GitHub Issues/PR 同步、TODO/FIXME 导入、交互式引用图、定时 GC。
+**v0.3 已实现**：`todogc watch` 定时体检、ntfy 推送(事件驱动 + 去抖复议期 + 心跳摘要 +
+堆占用告警边沿触发)、单实例建议性锁、Web 端按配置自动挂载后台 watcher 线程。
+
+**后续候选（欢迎 PR）**：GitHub Issues/PR 同步、TODO/FIXME 导入、交互式引用图。
 
 > 说明：任务的"年龄"目前在**回收仪式里被复活时** +1（即"你逃过它几次"），而非每轮 GC 自动 +1。
 

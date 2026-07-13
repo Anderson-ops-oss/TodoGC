@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "todogc"
-version = "0.2.0"
+version = "0.3.0"
 description = "把待办清单当堆内存，用 GC 冷酷回收你永远不会做的僵尸任务。"
 readme = "README.md"
 requires-python = ">=3.10"
