@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES
+from todogc.i18n import t as _t
+
 try:  # Python 3.11+
     import tomllib  # pyright: ignore[reportMissingImports] - pyrightconfig.json 钉死 3.10，3.10 下本就没有
 except ImportError:  # pragma: no cover - 当前 CI 的 3.10 job 覆盖
@@ -29,6 +32,10 @@ class AppConfig:
     recent_days: int = 30
     max_consecutive_skips: int = 5
     restore_grace_days: int = 7
+
+    # [i18n]：CLI 启动时的默认语言、Watcher 推送用的语言。Web 端有自己的 per-session
+    # 语言(见 webapp.py 的 session_state)，不读这个字段，这里只是它的初始值来源。
+    lang: str = DEFAULT_LOCALE
 
     # [notify]：定时体检(todogc watch)的 ntfy 推送目标；ntfy_enabled 为 False 时 watch 只算不推。
     ntfy_enabled: bool = False
@@ -54,7 +61,7 @@ def _scalar(raw: str) -> object:
     try:
         return int(raw)
     except ValueError as exc:
-        raise ConfigError(f"不支持的配置值：{raw}") from exc
+        raise ConfigError(_t("config.error.unsupported_value", value=raw)) from exc
 
 
 def _fallback_toml(text: str) -> dict[str, dict[str, object]]:
@@ -68,15 +75,15 @@ def _fallback_toml(text: str) -> dict[str, dict[str, object]]:
         if line.startswith("[") and line.endswith("]"):
             section = line[1:-1].strip()
             if not section:
-                raise ConfigError(f"第 {lineno} 行：空 section")
+                raise ConfigError(_t("config.error.empty_section", lineno=lineno))
             out.setdefault(section, {})
             continue
         if section is None or "=" not in line:
-            raise ConfigError(f"第 {lineno} 行：配置格式无效")
+            raise ConfigError(_t("config.error.invalid_format", lineno=lineno))
         key, raw = line.split("=", 1)
         key = key.strip()
         if not key:
-            raise ConfigError(f"第 {lineno} 行：空配置键")
+            raise ConfigError(_t("config.error.empty_key", lineno=lineno))
         out[section][key] = _scalar(raw)
     return out
 
@@ -84,13 +91,13 @@ def _fallback_toml(text: str) -> dict[str, dict[str, object]]:
 def _positive(value: Any, name: str) -> int:
     """把配置值校验为正整数；bool 不作为 int 接受。"""
     if isinstance(value, bool):
-        raise ConfigError(f"{name} 必须是正整数")
+        raise ConfigError(_t("config.error.must_be_positive_int", name=name))
     try:
         number = int(value)
     except (TypeError, ValueError) as exc:
-        raise ConfigError(f"{name} 必须是正整数") from exc
+        raise ConfigError(_t("config.error.must_be_positive_int", name=name)) from exc
     if number <= 0:
-        raise ConfigError(f"{name} 必须大于 0")
+        raise ConfigError(_t("config.error.must_be_positive", name=name))
     return number
 
 
@@ -104,14 +111,14 @@ def _flag(value: Any, name: str) -> bool:
             return True
         if low in {"false", "0", "no", "off"}:
             return False
-    raise ConfigError(f"{name} 必须是布尔值(true/false)")
+    raise ConfigError(_t("config.error.must_be_bool", name=name))
 
 
 def _percent(value: Any, name: str) -> int:
     """把配置值校验为 1~100 的百分比整数。"""
     number = _positive(value, name)
     if number > 100:
-        raise ConfigError(f"{name} 必须在 1~100 之间")
+        raise ConfigError(_t("config.error.must_be_percent", name=name))
     return number
 
 
@@ -130,25 +137,32 @@ def load_config(path: str | Path | None = None, *, environ: dict[str, str] | Non
         except (OSError, UnicodeError, ValueError) as exc:
             if isinstance(exc, ConfigError):
                 raise
-            raise ConfigError(f"无法读取配置 {config_path}: {exc}") from exc
+            raise ConfigError(_t("config.error.read_failed", path=config_path, error=exc)) from exc
 
     gc = data.get("gc", {})
     heap = data.get("heap", {})
+    i18n_section = data.get("i18n", {})
     notify = data.get("notify", {})
     watch = data.get("watch", {})
     if not isinstance(gc, dict) or not isinstance(heap, dict):
-        raise ConfigError("[gc] 和 [heap] 必须是配置 section")
+        raise ConfigError(_t("config.error.gc_heap_sections"))
+    if not isinstance(i18n_section, dict):
+        raise ConfigError(_t("config.error.i18n_section"))
     if not isinstance(notify, dict) or not isinstance(watch, dict):
-        raise ConfigError("[notify] 和 [watch] 必须是配置 section")
+        raise ConfigError(_t("config.error.notify_watch_sections"))
 
     mode = env.get("TODOGC_GC_MODE", gc.get("mode", "normal"))
     if mode not in {"gentle", "normal", "aggressive"}:
-        raise ConfigError("gc.mode 必须是 gentle / normal / aggressive")
+        raise ConfigError(_t("config.error.invalid_gc_mode"))
+
+    lang = str(env.get("TODOGC_LANG", i18n_section.get("lang", DEFAULT_LOCALE)))
+    if lang not in SUPPORTED_LOCALES:
+        raise ConfigError(_t("config.error.invalid_lang", langs="/".join(SUPPORTED_LOCALES)))
 
     ntfy_enabled = _flag(env.get("TODOGC_NTFY_ENABLED", notify.get("ntfy_enabled", False)), "notify.ntfy_enabled")
     ntfy_topic = str(env.get("TODOGC_NTFY_TOPIC", notify.get("ntfy_topic", "")))
     if ntfy_enabled and not ntfy_topic:
-        raise ConfigError("notify.ntfy_enabled 为 true 时必须配置 notify.ntfy_topic")
+        raise ConfigError(_t("config.error.ntfy_topic_required"))
     ntfy_token_raw = env.get("TODOGC_NTFY_TOKEN", notify.get("ntfy_token")) or None
     ntfy_token = str(ntfy_token_raw) if ntfy_token_raw else None
 
@@ -164,6 +178,7 @@ def load_config(path: str | Path | None = None, *, environ: dict[str, str] | Non
             env.get("TODOGC_RESTORE_GRACE_DAYS", gc.get("restore_grace_days", 7)),
             "gc.restore_grace_days",
         ),
+        lang=lang,
         ntfy_enabled=ntfy_enabled,
         ntfy_server=str(env.get("TODOGC_NTFY_SERVER", notify.get("ntfy_server", "https://ntfy.sh"))),
         ntfy_topic=ntfy_topic,

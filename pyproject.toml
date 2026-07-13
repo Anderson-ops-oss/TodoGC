@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "todogc"
-version = "0.3.0"
+version = "0.4.0"
 description = "把待办清单当堆内存，用 GC 冷酷回收你永远不会做的僵尸任务。"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,7 +30,7 @@ web = ["streamlit>=1.30"]            # 可选：Web 端堆内存图 + 交互(tod
 todogc = "todogc.cli:main"
 
 [tool.setuptools]
-packages = ["todogc"]
+packages = ["todogc", "todogc.locales"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -125,6 +125,17 @@ def test_toml_config_and_environment_precedence(tmp_path):
         load_config(config, environ={})
 
 
+def test_i18n_lang_config_and_environment_precedence(tmp_path):
+    config = tmp_path / "todogc.toml"
+    config.write_text("[i18n]\nlang=\"zh\"\n", encoding="utf-8")
+    assert load_config(config, environ={}).lang == "zh"
+    assert load_config(config, environ={"TODOGC_LANG": "en"}).lang == "en"
+    assert load_config(tmp_path / "missing.toml", environ={}).lang == "en"
+    config.write_text("[i18n]\nlang=\"fr\"\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(config, environ={})
+
+
 def test_python310_zero_dependency_config_fallback(tmp_path, monkeypatch):
     config = tmp_path / "todogc.toml"
     config.write_text('[gc]\nmode="gentle"\nrecent_days=12\n[heap]\nmax=9\n', encoding="utf-8")

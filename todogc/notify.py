@@ -7,6 +7,8 @@ import json
 import urllib.error
 import urllib.request
 
+from todogc.i18n import DEFAULT_LOCALE, t
+
 
 class NotifyError(RuntimeError):
     """推送失败(网络错误 / 服务端返回非成功状态码)。"""
@@ -20,13 +22,21 @@ class NtfyChannel:
     省掉这层麻烦。
     """
 
-    def __init__(self, *, topic: str, server: str = "https://ntfy.sh", token: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        topic: str,
+        server: str = "https://ntfy.sh",
+        token: str | None = None,
+        lang: str = DEFAULT_LOCALE,
+    ) -> None:
         """构造一个 ntfy 推送目标。
 
         Args:
             topic (str): ntfy topic 名称(不可为空)。
             server (str): ntfy 服务端地址；默认公共实例 https://ntfy.sh，可填自建实例。
             token (str | None): 受保护 topic 需要的 Bearer token；公共实例通常留空。
+            lang (str): 本渠道自身报错文案(ValueError/NotifyError)使用的语言，默认英文。
 
         Returns:
             None
@@ -35,10 +45,11 @@ class NtfyChannel:
             ValueError: topic 为空时。
         """
         if not topic:
-            raise ValueError("ntfy topic 不能为空")
+            raise ValueError(t("notify.error.empty_topic", lang=lang))
         self._topic = topic
         self._server = server.rstrip("/")
         self._token = token
+        self._lang = lang
 
     def send(
         self,
@@ -64,7 +75,7 @@ class NtfyChannel:
             NotifyError: 网络错误，或服务端返回非成功状态码。
         """
         if not 1 <= priority <= 5:
-            raise ValueError("priority 必须在 1~5 之间")
+            raise ValueError(t("notify.error.invalid_priority", lang=self._lang))
         payload: dict[str, object] = {
             "topic": self._topic,
             "title": title,
@@ -85,6 +96,6 @@ class NtfyChannel:
         try:
             urllib.request.urlopen(req, timeout=10)
         except urllib.error.HTTPError as exc:
-            raise NotifyError(f"ntfy 返回 {exc.code}：{exc.reason}") from exc
+            raise NotifyError(t("notify.error.http", lang=self._lang, code=exc.code, reason=exc.reason)) from exc
         except OSError as exc:
-            raise NotifyError(f"ntfy 推送失败：{exc}") from exc
+            raise NotifyError(t("notify.error.network", lang=self._lang, error=exc)) from exc

@@ -8,7 +8,7 @@ import os
 import signal
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -16,6 +16,8 @@ from todogc import console, report
 from todogc.collector import Candidate, Collector, GCPolicy, GCResult
 from todogc.config import AppConfig, ConfigError, load_config
 from todogc.heap import ReferenceStrength, State, TouchKind
+from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES, set_locale
+from todogc.i18n import t as _t
 from todogc.store import Store
 from todogc.watcher import Watcher
 
@@ -88,10 +90,10 @@ def run_ceremony(
         choice = decide(cand)
         if choice == "collect":
             if _finalize_spent(store, task.id):
-                note = "finalize() already called —— 上次复活过，这次没得聊"
+                note = _t("cli.ceremony.finalize_spent")
             else:
                 eulogy = eulogize(cand).strip() if eulogize else ""
-                note = eulogy or "(沉默回收，未留遗言)"
+                note = eulogy or _t("cli.ceremony.silent_collect")
             task.state = State.COLLECTED
             store.update_task(task)
             store.record(task.id, TouchKind.COLLECT, note=note, ts=now)
@@ -140,13 +142,13 @@ def cmd_add(store: Store, args: argparse.Namespace) -> int:
     size = store.heap_size()
     if not args.force and not args.meta and size >= args.heap_max:
         result = _run_gc(store, datetime.now(timezone.utc), args.gc_policy)
-        lines = [f"[GC (Allocation Failure)] 活跃堆 {size}/{args.heap_max} 已满——想分配新对象，先回收。"]
+        lines = [_t("cli.add.heap_full", size=size, max=args.heap_max)]
         if result.candidates:
             lines.append(report.format_candidates(result, views_of=store.view_count))
-            lines.append("→ 跑 `todogc gc` 处置这些僵尸腾出空间，或 `add --force` 强行超配。")
+            lines.append(_t("cli.add.hint_gc_or_force"))
         else:
-            lines.append("[Full GC (Ergonomics)] 且没有可回收的僵尸——-Xmx 已拉满，GC 无力回天。")
-            lines.append("→ 砍需求，不是加内存(真要硬来：add --force)。")
+            lines.append(_t("cli.add.full_gc_no_candidates"))
+            lines.append(_t("cli.add.hint_cut_scope"))
         block = "\n".join(lines)
         if not console.print_text(block, err=True):
             print(block, file=sys.stderr)
@@ -160,10 +162,10 @@ def cmd_add(store: Store, args: argparse.Namespace) -> int:
             ref_strength=args.ref_strength,
         )
     except ValueError as exc:
-        print(f"✗ {exc}", file=sys.stderr)
+        print(_t("cli.error", error=exc), file=sys.stderr)
         return 1
     tag = " ★root" if args.root else (" [meta]" if args.meta else "")
-    print(f"分配 #{t.id}: {t.title}{tag}")
+    print(_t("cli.add.allocated", id=t.id, title=t.title, tag=tag))
     return 0
 
 
@@ -180,9 +182,9 @@ def cmd_root(store: Store, args: argparse.Namespace) -> int:
     try:
         store.set_root(args.id, not args.off)
     except ValueError as exc:
-        print(f"✗ {exc}", file=sys.stderr)
+        print(_t("cli.error", error=exc), file=sys.stderr)
         return 1
-    print(f"#{args.id} {'已取消 root' if args.off else '设为 ★root'}")
+    print(_t("cli.root.off" if args.off else "cli.root.on", id=args.id))
     return 0
 
 
@@ -199,12 +201,12 @@ def cmd_dep(store: Store, args: argparse.Namespace) -> int:
     try:
         if args.remove:
             store.remove_dep(args.task_id, args.ref_id)
-            print(f"删除理由边 #{args.task_id} → #{args.ref_id}")
+            print(_t("cli.dep.removed", task_id=args.task_id, ref_id=args.ref_id))
         else:
             store.add_dep(args.task_id, args.ref_id)
-            print(f"#{args.task_id} 的理由 → #{args.ref_id}")
+            print(_t("cli.dep.added", task_id=args.task_id, ref_id=args.ref_id))
     except ValueError as e:
-        print(f"✗ {e}", file=sys.stderr)
+        print(_t("cli.error", error=e), file=sys.stderr)
         return 1
     return 0
 
@@ -229,7 +231,7 @@ def cmd_ls(store: Store, args: argparse.Namespace) -> int:
     if console.render_ls(tasks, roots):  # 装了 rich → 彩色表格
         return 0
     if not tasks:
-        print("(空堆)")
+        print(_t("cli.ls.empty_heap"))
         return 0
     for t in tasks:
         mark = "★" if t.id in roots else " "
@@ -250,14 +252,14 @@ def cmd_progress(store: Store, args: argparse.Namespace) -> int:
         int: 退出码。
     """
     if store.get_task(args.id, record_view=False) is None:
-        print(f"✗ 没有 #{args.id}", file=sys.stderr)
+        print(_t("cli.error.not_found", id=args.id), file=sys.stderr)
         return 1
     try:
         store.progress(args.id, args.note)
     except ValueError as exc:
-        print(f"✗ {exc}", file=sys.stderr)
+        print(_t("cli.error", error=exc), file=sys.stderr)
         return 1
-    print(f"#{args.id} +1 refcount。这才算数。")
+    print(_t("cli.progress.done", id=args.id))
     return 0
 
 
@@ -272,14 +274,14 @@ def cmd_snooze(store: Store, args: argparse.Namespace) -> int:
         int: 退出码。
     """
     if store.get_task(args.id, record_view=False) is None:
-        print(f"✗ 没有 #{args.id}", file=sys.stderr)
+        print(_t("cli.error.not_found", id=args.id), file=sys.stderr)
         return 1
     try:
         store.defer(args.id, args.note)
     except ValueError as exc:
-        print(f"✗ {exc}", file=sys.stderr)
+        print(_t("cli.error", error=exc), file=sys.stderr)
         return 1
-    print(f"#{args.id} 又往后推了一次。skip_count +1，它在记账。")
+    print(_t("cli.snooze.done", id=args.id))
     return 0
 
 
@@ -324,23 +326,23 @@ def cmd_gc(store: Store, args: argparse.Namespace) -> int:
         )
         return 0
 
-    print("\n—— Stop-the-world：世界暂停，逐个处置 ——")
+    print(_t("cli.gc.stw_banner"))
 
     def decide(cand: Candidate) -> str:
         print(f"\n  #{cand.task.id} {cand.task.title}  [{cand.reason.value}]")
         print(f"    {report.generation_taunt(cand.task.gen, cand.task.age)}")
         while True:
-            ans = input("    [r]复活  [c]回收  [s]跳过 > ").strip().lower()
+            ans = input(_t("cli.gc.prompt_choice")).strip().lower()
             if ans in {"r", "c", "s"}:
                 return {"r": "revive", "c": "collect", "s": "skip"}[ans]
 
     def eulogize(cand: Candidate) -> str:
-        return input("    finalize() 遗言(回车=沉默回收) > ")
+        return input(_t("cli.gc.prompt_eulogy"))
 
     def revive_root(cand: Candidate) -> int | None:
         roots = sorted(store.root_ids())
         if not roots:
-            print("    ⚠ 没有 root 可复活到，先 add --root；本次按原样保留。")
+            print(_t("cli.gc.no_root_to_revive"))
             return None
         return roots[0]
 
@@ -366,7 +368,7 @@ def cmd_gc(store: Store, args: argparse.Namespace) -> int:
             for c in result.candidates
         ],
     )
-    print(f"\n[GC] 仪式结束：复活 {len(out.revived)} · 回收 {len(out.collected)} · 跳过 {len(out.skipped)}")
+    print(_t("cli.gc.ceremony_done", revived=len(out.revived), collected=len(out.collected), skipped=len(out.skipped)))
     return 0
 
 
@@ -407,12 +409,7 @@ def cmd_web(store: Store, args: argparse.Namespace) -> int:
         int: streamlit 子进程的退出码；未安装 streamlit 时返回 1。
     """
     if importlib.util.find_spec("streamlit") is None:
-        print(
-            "未安装 streamlit —— Web 端是可选功能。\n"
-            '  安装：pip install -e ".[web]"\n'
-            "  再跑：todogc web",
-            file=sys.stderr,
-        )
+        print(_t("cli.web.not_installed"), file=sys.stderr)
         return 1
     webapp = os.path.join(os.path.dirname(__file__), "webapp.py")
     env = {
@@ -423,11 +420,12 @@ def cmd_web(store: Store, args: argparse.Namespace) -> int:
         "TODOGC_RECENT_DAYS": str(args.gc_policy.recent_days),
         "TODOGC_MAX_SKIPS": str(args.gc_policy.max_skips),
         "TODOGC_RESTORE_GRACE_DAYS": str(args.gc_policy.restore_grace_days),
+        "TODOGC_LANG": args.app_config.lang,
     }
     cmd = [sys.executable, "-m", "streamlit", "run", webapp]
     if args.port is not None:
         cmd += ["--server.port", str(args.port)]
-    print(f"启动 Web 端(库 {args.db} · -Xmx {args.heap_max}) —— Ctrl-C 停止")
+    print(_t("cli.web.starting", db=args.db, heap_max=args.heap_max))
     return subprocess.run(cmd, env=env).returncode
 
 
@@ -447,23 +445,16 @@ def cmd_watch(store: Store, args: argparse.Namespace) -> int:
     """
     cfg: AppConfig = args.app_config
     if not cfg.ntfy_enabled:
-        print(
-            "未开启定时体检推送 —— 先在 todogc.toml 配置：\n"
-            "  [notify]\n"
-            "  ntfy_enabled = true\n"
-            '  ntfy_topic = "你的-topic"\n'
-            "再跑 todogc watch",
-            file=sys.stderr,
-        )
+        print(_t("cli.watch.not_configured"), file=sys.stderr)
         return 1
     watcher = Watcher(args.db, cfg)
     signal.signal(signal.SIGTERM, lambda signum, frame: watcher.stop())
-    print(f"todogc watch 启动(库 {args.db} · 每 {cfg.watch_poll_seconds}s 体检一次) —— Ctrl-C 停止")
+    print(_t("cli.watch.starting", db=args.db, poll_seconds=cfg.watch_poll_seconds))
     try:
         watcher.run()
     except KeyboardInterrupt:
         pass
-    print("todogc watch 已停止")
+    print(_t("cli.watch.stopped"))
     return 0
 
 
@@ -479,7 +470,7 @@ def cmd_graveyard(store: Store, args: argparse.Namespace) -> int:
     """
     dead = store.list_tasks(state=State.COLLECTED, record_view=False)
     if not dead:
-        print("墓园空空。你还没对自己诚实过。")
+        print(_t("cli.graveyard.empty"))
         return 0
     for t in dead:
         task_id = t.persisted_id
@@ -487,10 +478,15 @@ def cmd_graveyard(store: Store, args: argparse.Namespace) -> int:
         last = collects[-1] if collects else None
         days = (last.ts - t.created_at).days if last and t.created_at else 0
         print(
-            f"† {t.title}   存活 {days}d · 推进 {store.refcount(task_id)} "
-            f"· 查看 {store.view_count(task_id)}"
+            _t(
+                "cli.graveyard.entry",
+                title=t.title,
+                days=days,
+                refcount=store.refcount(task_id),
+                views=store.view_count(task_id),
+            )
         )
-        print(f"  「{last.note if last else ''}」")
+        print(_t("cli.graveyard.epitaph", note=last.note if last else ""))
     return 0
 
 
@@ -506,26 +502,26 @@ def cmd_restore(store: Store, args: argparse.Namespace) -> int:
     """
     t = store.get_task(args.id, record_view=False)
     if t is None:
-        print(f"✗ 没有 #{args.id}", file=sys.stderr)
+        print(_t("cli.error.not_found", id=args.id), file=sys.stderr)
         return 1
     if t.state is not State.COLLECTED:
-        print(f"✗ #{args.id} 尚未被回收", file=sys.stderr)
+        print(_t("cli.restore.not_collected", id=args.id), file=sys.stderr)
         return 1
     if args.root_id is not None:
         try:
             root = store.get_task(args.root_id, record_view=False)
             if root is None or root.state is State.COLLECTED:
-                raise ValueError(f"恢复目标 #{args.root_id} 不存在或已回收")
+                raise ValueError(_t("cli.restore.invalid_root", root_id=args.root_id))
             if args.root_id == args.id:
-                raise ValueError("任务不能恢复到自己下面")
+                raise ValueError(_t("cli.restore.self_link"))
             t.root_id = args.root_id
         except ValueError as exc:
-            print(f"✗ {exc}", file=sys.stderr)
+            print(_t("cli.error", error=exc), file=sys.stderr)
             return 1
     t.state = State.LIVE
     store.update_task(t)
     store.record(args.id, TouchKind.RESTORE)
-    print(f"#{args.id} 已恢复。手滑难免，这次不算自欺。")
+    print(_t("cli.restore.done", id=args.id))
     return 0
 
 
@@ -533,7 +529,7 @@ def cmd_show(store: Store, args: argparse.Namespace) -> int:
     """显示任务详情和关键指标，不写 VIEW 事件。"""
     task = store.get_task(args.id, record_view=False)
     if task is None:
-        print(f"✗ 没有 #{args.id}", file=sys.stderr)
+        print(_t("cli.error.not_found", id=args.id), file=sys.stderr)
         return 1
     task_id = task.persisted_id
     roots = store.root_ids()
@@ -556,7 +552,7 @@ def cmd_show(store: Store, args: argparse.Namespace) -> int:
 def cmd_history(store: Store, args: argparse.Namespace) -> int:
     """打印 append-only 事件时间线。"""
     if store.get_task(args.id, record_view=False) is None:
-        print(f"✗ 没有 #{args.id}", file=sys.stderr)
+        print(_t("cli.error.not_found", id=args.id), file=sys.stderr)
         return 1
     touches = store.touches(args.id)
     if args.limit is not None:
@@ -570,14 +566,14 @@ def cmd_history(store: Store, args: argparse.Namespace) -> int:
 def cmd_edit(store: Store, args: argparse.Namespace) -> int:
     """编辑任务标题/引用强度。"""
     if args.title is None and args.ref_strength is None:
-        print("✗ edit 至少需要新标题或 --ref", file=sys.stderr)
+        print(_t("cli.edit.needs_field"), file=sys.stderr)
         return 1
     try:
         task = store.edit_task(args.id, title=args.title, ref_strength=args.ref_strength)
     except (ValueError, KeyError) as exc:
-        print(f"✗ {exc}", file=sys.stderr)
+        print(_t("cli.error", error=exc), file=sys.stderr)
         return 1
-    print(f"#{task.id} 已更新：{task.title} [{task.ref_strength.value}]")
+    print(_t("cli.edit.done", id=task.id, title=task.title, ref=task.ref_strength.value))
     return 0
 
 
@@ -586,14 +582,14 @@ def cmd_link(store: Store, args: argparse.Namespace) -> int:
     try:
         if args.off:
             store.unlink(args.id)
-            print(f"#{args.id} 已解除关联")
+            print(_t("cli.link.unlinked", id=args.id))
         else:
             if args.root_id is None:
-                raise ValueError("link 需要 root_id，或使用 --off")
+                raise ValueError(_t("cli.link.needs_root_id"))
             store.link(args.id, args.root_id)
-            print(f"#{args.id} 已关联到 #{args.root_id}")
+            print(_t("cli.link.linked", id=args.id, root_id=args.root_id))
     except ValueError as exc:
-        print(f"✗ {exc}", file=sys.stderr)
+        print(_t("cli.error", error=exc), file=sys.stderr)
         return 1
     return 0
 
@@ -612,9 +608,9 @@ def _days(value: str) -> int:
     try:
         days = int(raw)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("时间范围应为 30d 或正整数") from exc
+        raise argparse.ArgumentTypeError(_t("cli.parse.time_range_invalid")) from exc
     if days <= 0:
-        raise argparse.ArgumentTypeError("时间范围必须大于 0")
+        raise argparse.ArgumentTypeError(_t("cli.parse.time_range_positive"))
     return days
 
 
@@ -623,9 +619,9 @@ def _positive_int(value: str) -> int:
     try:
         number = int(value)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError("必须是正整数") from exc
+        raise argparse.ArgumentTypeError(_t("cli.parse.must_be_positive_int")) from exc
     if number <= 0:
-        raise argparse.ArgumentTypeError("必须大于 0")
+        raise argparse.ArgumentTypeError(_t("cli.parse.must_be_positive"))
     return number
 
 
@@ -643,110 +639,134 @@ def build_parser() -> argparse.ArgumentParser:
     Returns:
         argparse.ArgumentParser: 已挂好子命令与 func 默认值的解析器。
     """
-    parser = argparse.ArgumentParser(prog="todogc", description="用 GC 冷酷回收你永远不会做的任务。")
-    parser.add_argument("--db", default=os.environ.get("TODOGC_DB", "todogc.db"), help="数据库路径")
-    parser.add_argument("--config", default=None, help="配置文件路径(默认 todogc.toml)")
+    parser = argparse.ArgumentParser(prog="todogc", description=_t("cli.help.description"))
+    parser.add_argument("--db", default=os.environ.get("TODOGC_DB", "todogc.db"), help=_t("cli.help.db"))
+    parser.add_argument("--config", default=None, help=_t("cli.help.config"))
     parser.add_argument(
-        "--heap-max", type=_positive_int, default=None, help="活跃堆上限(-Xmx)，满则触发 Allocation Failure"
+        "--heap-max", type=_positive_int, default=None, help=_t("cli.help.heap_max")
     )
     parser.add_argument("--gc-mode", choices=["gentle", "normal", "aggressive"], default=None)
     parser.add_argument("--recent-days", type=_positive_int, default=None)
-    parser.add_argument("--max-skips", type=_positive_int, default=None, help="连续推迟阈值")
+    parser.add_argument("--max-skips", type=_positive_int, default=None, help=_t("cli.help.max_skips"))
     parser.add_argument("--restore-grace-days", type=_positive_int, default=None)
+    parser.add_argument("--lang", choices=SUPPORTED_LOCALES, default=None, help=_t("cli.help.lang"))
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("add", help="录入一个任务")
+    p = sub.add_parser("add", help=_t("cli.help.cmd_add"))
     p.add_argument("title")
-    p.add_argument("--root-id", type=int, default=None, help="关联到的父/目标 id")
-    p.add_argument("--root", action="store_true", help="本身设为活跃 root")
-    p.add_argument("--meta", action="store_true", help="标为元任务(Metaspace)")
+    p.add_argument("--root-id", type=int, default=None, help=_t("cli.help.add_root_id"))
+    p.add_argument("--root", action="store_true", help=_t("cli.help.add_root"))
+    p.add_argument("--meta", action="store_true", help=_t("cli.help.add_meta"))
     p.add_argument(
         "--ref", dest="ref_strength", choices=[r.value for r in ReferenceStrength],
-        default=ReferenceStrength.SOFT.value, help="引用强度",
+        default=ReferenceStrength.SOFT.value, help=_t("cli.help.add_ref"),
     )
-    p.add_argument("--force", action="store_true", help="堆满时强行超配(跳过 Allocation Failure)")
+    p.add_argument("--force", action="store_true", help=_t("cli.help.add_force"))
     p.set_defaults(func=cmd_add)
 
-    p = sub.add_parser("root", help="标记/取消活跃 root")
+    p = sub.add_parser("root", help=_t("cli.help.cmd_root"))
     p.add_argument("id", type=int)
-    p.add_argument("--off", action="store_true", help="取消 root")
+    p.add_argument("--off", action="store_true", help=_t("cli.help.root_off"))
     p.set_defaults(func=cmd_root)
 
-    p = sub.add_parser("dep", help="记录/删除一条理由边(task 的理由是 ref)")
+    p = sub.add_parser("dep", help=_t("cli.help.cmd_dep"))
     p.add_argument("task_id", type=int)
     p.add_argument("ref_id", type=int)
     p.add_argument("--remove", action="store_true")
     p.set_defaults(func=cmd_dep)
 
-    p = sub.add_parser("ls", help="列出任务")
+    p = sub.add_parser("ls", help=_t("cli.help.cmd_ls"))
     p.add_argument("--state", choices=[s.value for s in State], default=None)
     p.set_defaults(func=cmd_ls)
 
-    p = sub.add_parser("progress", help="记一次真推进")
+    p = sub.add_parser("progress", help=_t("cli.help.cmd_progress"))
     p.add_argument("id", type=int)
     p.add_argument("note", nargs="?", default=None)
     p.set_defaults(func=cmd_progress)
 
-    p = sub.add_parser("snooze", help="推迟一个任务")
+    p = sub.add_parser("snooze", help=_t("cli.help.cmd_snooze"))
     p.add_argument("id", type=int)
     p.add_argument("note", nargs="?", default=None)
     p.set_defaults(func=cmd_snooze)
 
-    p = sub.add_parser("gc", help="触发垃圾回收 + 回收仪式")
+    p = sub.add_parser("gc", help=_t("cli.help.cmd_gc"))
     p.add_argument(
         "--mode", dest="command_gc_mode", choices=["gentle", "normal", "aggressive"], default=None
     )
-    p.add_argument("--full", action="store_true", help="渲染为 Full GC")
-    p.add_argument("--dry-run", action="store_true", help="只出报告，不进仪式")
+    p.add_argument("--full", action="store_true", help=_t("cli.help.gc_full"))
+    p.add_argument("--dry-run", action="store_true", help=_t("cli.help.gc_dry_run"))
     p.set_defaults(func=cmd_gc)
 
-    p = sub.add_parser("heap", aliases=["jmap"], help="打印分代堆内存图(僵尸标红)")
+    p = sub.add_parser("heap", aliases=["jmap"], help=_t("cli.help.cmd_heap"))
     p.set_defaults(func=cmd_heap)
 
-    p = sub.add_parser("web", help="启动 Streamlit Web 端(堆内存图 + 交互，需 [web] extra)")
-    p.add_argument("--port", type=int, default=None, help="Web 端端口(默认 streamlit 的 8501)")
+    p = sub.add_parser("web", help=_t("cli.help.cmd_web"))
+    p.add_argument("--port", type=int, default=None, help=_t("cli.help.web_port"))
     p.set_defaults(func=cmd_web)
 
-    p = sub.add_parser("watch", help="定时体检，状态跃迁/堆占用告警时推送 ntfy(需 [notify] 配置)")
+    p = sub.add_parser("watch", help=_t("cli.help.cmd_watch"))
     p.set_defaults(func=cmd_watch)
 
-    p = sub.add_parser("graveyard", help="悼词墙")
+    p = sub.add_parser("graveyard", help=_t("cli.help.cmd_graveyard"))
     p.set_defaults(func=cmd_graveyard)
 
-    p = sub.add_parser("restore", help="从垃圾桶恢复")
+    p = sub.add_parser("restore", help=_t("cli.help.cmd_restore"))
     p.add_argument("id", type=int)
-    p.add_argument("--root-id", type=int, default=None, help="恢复时重新关联到父/目标")
+    p.add_argument("--root-id", type=int, default=None, help=_t("cli.help.restore_root_id"))
     p.set_defaults(func=cmd_restore)
 
-    p = sub.add_parser("show", help="查看任务详情")
+    p = sub.add_parser("show", help=_t("cli.help.cmd_show"))
     p.add_argument("id", type=int)
     p.set_defaults(func=cmd_show)
 
-    p = sub.add_parser("history", help="查看任务事件时间线")
+    p = sub.add_parser("history", help=_t("cli.help.cmd_history"))
     p.add_argument("id", type=int)
     p.add_argument("--limit", type=_positive_int, default=None)
     p.set_defaults(func=cmd_history)
 
-    p = sub.add_parser("edit", help="编辑标题或引用强度")
+    p = sub.add_parser("edit", help=_t("cli.help.cmd_edit"))
     p.add_argument("id", type=int)
     p.add_argument("title", nargs="?", default=None)
     p.add_argument("--ref", dest="ref_strength", choices=[r.value for r in ReferenceStrength], default=None)
     p.set_defaults(func=cmd_edit)
 
-    p = sub.add_parser("link", help="关联或解除父/目标")
+    p = sub.add_parser("link", help=_t("cli.help.cmd_link"))
     p.add_argument("id", type=int)
     p.add_argument("root_id", type=int, nargs="?", default=None)
     p.add_argument("--off", action="store_true")
     p.set_defaults(func=cmd_link)
 
-    p = sub.add_parser("doctor", help="诊断认知内存泄漏")
+    p = sub.add_parser("doctor", help=_t("cli.help.cmd_doctor"))
     p.set_defaults(func=cmd_doctor)
 
-    p = sub.add_parser("stats", help="查看 GC 历史统计")
-    p.add_argument("--since", type=_days, default=None, help="例如 30d")
+    p = sub.add_parser("stats", help=_t("cli.help.cmd_stats"))
+    p.add_argument("--since", type=_days, default=None, help=_t("cli.help.stats_since"))
     p.set_defaults(func=cmd_stats)
 
     return parser
+
+
+def _prescan_lang(argv: list[str], environ: Mapping[str, str]) -> str:
+    """在构建 parser 前先找出 --lang(argparse 自身的 help 文案要用哪种语言)。
+
+    不读配置文件里的 [i18n].lang —— 那需要先解析 --config，在这一步做不到，只能
+    等 main() 里 load_config() 兜底(意味着"仅在配置文件里设置语言、不传 --lang/
+    环境变量"时，--help 本身的文案仍是默认语言，但命令实际执行的输出会是配置里
+    指定的语言)。
+
+    Args:
+        argv (list[str]): 原始参数列表(build_parser() 之前)。
+        environ (dict[str, str]): 环境变量。
+
+    Returns:
+        str: 探测到的语言代码；未探测到合法值时为 DEFAULT_LOCALE。
+    """
+    for i, token in enumerate(argv):
+        if token == "--lang" and i + 1 < len(argv):
+            return argv[i + 1]
+        if token.startswith("--lang="):
+            return token.split("=", 1)[1]
+    return str(environ.get("TODOGC_LANG", DEFAULT_LOCALE))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -758,10 +778,15 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         int: 进程退出码。
     """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    prelim_lang = _prescan_lang(argv, os.environ)
+    if prelim_lang in SUPPORTED_LOCALES:
+        set_locale(prelim_lang)
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
         cfg = load_config(args.config)
+        set_locale(args.lang or cfg.lang)  # --lang > 环境变量/配置文件(已内含在 cfg.lang 里) > 默认
         args.heap_max = args.heap_max if args.heap_max is not None else cfg.heap_max
         mode = getattr(args, "command_gc_mode", None) or args.gc_mode or cfg.gc_mode
         recent_days = args.recent_days if args.recent_days is not None else cfg.recent_days
@@ -775,7 +800,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         args.app_config = cfg  # 完整配置(含 notify.*/watch.*)，watch 子命令要用；其余命令忽略。
     except (ConfigError, ValueError) as exc:
-        print(f"✗ 配置错误：{exc}", file=sys.stderr)
+        print(_t("cli.error.config", error=exc), file=sys.stderr)
         return 2
     store = Store(args.db)
     try:

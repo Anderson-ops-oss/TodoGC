@@ -21,11 +21,12 @@ from todogc.heap import (
     Touch,
     TouchKind,
 )
+from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES, get_locale, n_, set_locale, t
 from todogc.notify import NotifyError, NtfyChannel
 from todogc.store import GCRun, Store
 from todogc.watcher import TickEvent, TickResult, Watcher, run_tick
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "__version__",
@@ -52,6 +53,13 @@ __all__ = [
     "Cycle",
     "Reason",
     "TaskMetrics",
+    # i18n
+    "t",
+    "n_",
+    "set_locale",
+    "get_locale",
+    "DEFAULT_LOCALE",
+    "SUPPORTED_LOCALES",
     # notify
     "NotifyError",
     "NtfyChannel",

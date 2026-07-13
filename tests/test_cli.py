@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from todogc.cli import _finalize_spent, main, run_ceremony
+import pytest
+
+from todogc.cli import _finalize_spent, _prescan_lang, main, run_ceremony
 from todogc.collector import Collector
 from todogc.heap import State, TouchKind
 from todogc.store import Store
@@ -132,4 +134,55 @@ def test_true_oom_gives_diagnosis(tmp_path, capsys):
     db = _db(tmp_path)
     main(["--heap-max", "1", "--db", db, "add", "G", "--root"])  # root 存活、非候选
     assert main(["--heap-max", "1", "--db", db, "add", "又一个"]) == 1
-    assert "无力回天" in capsys.readouterr().err
+    assert "GC is powerless" in capsys.readouterr().err
+
+
+# ============ i18n：--lang / 环境变量 / 配置文件 优先级 ============
+
+def test_default_language_is_english(tmp_path, capsys):
+    db = _db(tmp_path)
+    assert main(["--db", db, "add", "A"]) == 0
+    assert "Allocated #1" in capsys.readouterr().out
+
+
+def test_lang_flag_switches_command_output(tmp_path, capsys):
+    db = _db(tmp_path)
+    assert main(["--db", db, "--lang", "zh", "add", "A"]) == 0
+    assert "分配 #1" in capsys.readouterr().out
+
+
+def test_lang_config_file_sets_default_when_no_flag_or_env(tmp_path, capsys):
+    config = tmp_path / "todogc.toml"
+    config.write_text('[i18n]\nlang="zh"\n', encoding="utf-8")
+    db = _db(tmp_path)
+    assert main(["--config", str(config), "--db", db, "add", "A"]) == 0
+    assert "分配 #1" in capsys.readouterr().out
+
+
+def test_lang_flag_overrides_config_file(tmp_path, capsys):
+    config = tmp_path / "todogc.toml"
+    config.write_text('[i18n]\nlang="zh"\n', encoding="utf-8")
+    db = _db(tmp_path)
+    assert main(["--config", str(config), "--db", db, "--lang", "en", "add", "A"]) == 0
+    assert "Allocated #1" in capsys.readouterr().out
+
+
+def test_lang_env_var_overrides_config_file(tmp_path, capsys, monkeypatch):
+    config = tmp_path / "todogc.toml"
+    config.write_text('[i18n]\nlang="zh"\n', encoding="utf-8")
+    monkeypatch.setenv("TODOGC_LANG", "en")
+    db = _db(tmp_path)
+    assert main(["--config", str(config), "--db", db, "add", "A"]) == 0
+    assert "Allocated #1" in capsys.readouterr().out
+
+
+def test_lang_invalid_value_rejected_by_argparse(tmp_path):
+    with pytest.raises(SystemExit):
+        main(["--db", _db(tmp_path), "--lang", "fr", "add", "A"])
+
+
+def test_prescan_lang_reads_space_and_equals_forms():
+    assert _prescan_lang(["--lang", "zh", "ls"], {}) == "zh"
+    assert _prescan_lang(["--lang=zh", "ls"], {}) == "zh"
+    assert _prescan_lang(["ls"], {"TODOGC_LANG": "zh"}) == "zh"
+    assert _prescan_lang(["ls"], {}) == "en"

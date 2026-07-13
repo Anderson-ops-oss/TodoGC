@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from todogc.collector import Candidate, Collector, GCPolicy, Reason
 from todogc.config import AppConfig
+from todogc.i18n import n_, t
 from todogc.notify import NotifyError, NtfyChannel
 from todogc.store import Store
 
@@ -111,7 +112,7 @@ def run_tick(store: Store, config: AppConfig, *, now: datetime | None = None) ->
         TickResult: 本轮判活与去抖判定的结果。
     """
     now = now or datetime.now(timezone.utc)
-    result = Collector(_policy_from_config(config)).run_on_store(
+    result = Collector(_policy_from_config(config), lang=config.lang).run_on_store(
         store, store.root_ids(), extra_edges=store.deps(), now=now
     )
     previous = store.watch_states()
@@ -160,28 +161,51 @@ def run_tick(store: Store, config: AppConfig, *, now: datetime | None = None) ->
     return tick
 
 
-def _event_message(result: TickResult) -> tuple[str, str]:
+def _event_message(result: TickResult, *, lang: str) -> tuple[str, str]:
     """把本轮触发的事件汇总成一条推送(多条跃迁合并成一条，不逐条刷屏)。"""
     lines = []
     for event in result.events:
         icon = "🔗" if event.status.startswith("cycle:") else "🆕"
-        lines.append(f"{icon} #{event.task_id} {event.title} —— {event.detail}")
-    title = "TodoGC · 新增候选" if len(result.events) == 1 else f"TodoGC · {len(result.events)} 项新增候选"
-    body = "\n".join(lines) + f"\n堆占用 {result.heap_size}/{result.heap_max} ({result.heap_pct}%)"
+        lines.append(
+            t(
+                "watcher.push.event.line",
+                lang=lang,
+                icon=icon,
+                task_id=event.task_id,
+                title=event.title,
+                detail=event.detail,
+            )
+        )
+    title = n_(
+        len(result.events), "watcher.push.event.title.one", "watcher.push.event.title.other", lang=lang
+    )
+    heap_line = t(
+        "watcher.push.heap_usage", lang=lang, size=result.heap_size, max=result.heap_max, pct=result.heap_pct
+    )
+    body = "\n".join(lines) + f"\n{heap_line}"
     return title, body
 
 
-def _heap_alarm_message(result: TickResult) -> tuple[str, str]:
+def _heap_alarm_message(result: TickResult, *, lang: str) -> tuple[str, str]:
     """堆占用新跨过阈值的告警(边沿触发)。"""
-    title = "TodoGC · 堆占用告警"
-    body = f"🚨 -Xmx 逼近上限：{result.heap_size}/{result.heap_max} ({result.heap_pct}%)"
+    title = t("watcher.push.heap_alarm.title", lang=lang)
+    body = t(
+        "watcher.push.heap_alarm.body", lang=lang, size=result.heap_size, max=result.heap_max, pct=result.heap_pct
+    )
     return title, body
 
 
-def _digest_message(result: TickResult) -> tuple[str, str]:
+def _digest_message(result: TickResult, *, lang: str) -> tuple[str, str]:
     """定时心跳摘要(不管这轮有没有新事件都可能发，证明 watcher 还活着)。"""
-    title = "TodoGC · 定时体检"
-    body = f"候选 {result.candidate_count} 个 · 堆占用 {result.heap_size}/{result.heap_max} ({result.heap_pct}%)"
+    title = t("watcher.push.digest.title", lang=lang)
+    body = t(
+        "watcher.push.digest.body",
+        lang=lang,
+        count=result.candidate_count,
+        size=result.heap_size,
+        max=result.heap_max,
+        pct=result.heap_pct,
+    )
     return title, body
 
 
@@ -206,10 +230,12 @@ class Watcher:
             ValueError: notify.ntfy_enabled 未开启时(调用方应在构造前自行检查，这里是兜底)。
         """
         if not config.ntfy_enabled:
-            raise ValueError("Watcher 需要先在配置里开启 notify.ntfy_enabled 并配置 ntfy_topic")
+            raise ValueError(t("watcher.error.ntfy_disabled", lang=config.lang))
         self._db_path = db_path
         self._config = config
-        self._channel = NtfyChannel(topic=config.ntfy_topic, server=config.ntfy_server, token=config.ntfy_token)
+        self._channel = NtfyChannel(
+            topic=config.ntfy_topic, server=config.ntfy_server, token=config.ntfy_token, lang=config.lang
+        )
         self._stop = threading.Event()
         self._pid = os.getpid()
 
@@ -234,7 +260,7 @@ class Watcher:
             now = datetime.now(timezone.utc)
             stale_after = timedelta(seconds=self._config.watch_lock_stale_seconds)
             if not store.try_acquire_watch_lock(self._pid, now, stale_after=stale_after):
-                print("todogc watch：检测到另一个 watcher 正在运行，本进程不再重复推送", file=sys.stderr)
+                print(t("watcher.lock.already_running", lang=self._config.lang), file=sys.stderr)
                 return
             elapsed = self._config.watch_poll_seconds  # 启动即跑一次，别等一个完整 poll 周期。
             while not self._stop.is_set():
@@ -254,12 +280,13 @@ class Watcher:
     def _run_once(self, store: Store, now: datetime) -> None:
         """跑一次 tick，把值得推送的部分发出去；推送失败只警告，不打断循环。"""
         result = run_tick(store, self._config, now=now)
+        lang = self._config.lang
         if result.events:
-            self._safe_send(*_event_message(result), priority=4, tags=["skull"])
+            self._safe_send(*_event_message(result, lang=lang), priority=4, tags=["skull"])
         if result.heap_alarm:
-            self._safe_send(*_heap_alarm_message(result), priority=5, tags=["rotating_light"])
+            self._safe_send(*_heap_alarm_message(result, lang=lang), priority=5, tags=["rotating_light"])
         if self._digest_due(store, now):
-            self._safe_send(*_digest_message(result), priority=2, tags=["recycle"])
+            self._safe_send(*_digest_message(result, lang=lang), priority=2, tags=["recycle"])
             store.watch_meta_set("last_digest_at", now.isoformat())
 
     def _digest_due(self, store: Store, now: datetime) -> bool:
@@ -274,4 +301,4 @@ class Watcher:
         try:
             self._channel.send(title, message, priority=priority, tags=tags)
         except NotifyError as exc:
-            print(f"todogc watch：「{title}」{exc}", file=sys.stderr)
+            print(t("watcher.push.failed", lang=self._config.lang, title=title, error=exc), file=sys.stderr)

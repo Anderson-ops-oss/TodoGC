@@ -1,0 +1,217 @@
+# zh.py —— 中文文案目录，key 集合必须与 en.py 完全一致(由 tests/test_i18n.py 兜底检查)。
+
+from __future__ import annotations
+
+MESSAGES: dict[str, str] = {
+    # collector.py
+    "collector.error.invalid_mode": "GC mode 必须是 gentle / normal / aggressive",
+    "collector.error.invalid_threshold": "GCPolicy 阈值必须大于 0",
+    "collector.detail.cycle": "陷在引用环 #{cycle_id}：互相担保，谁都不连 root",
+    "collector.detail.unreachable": "从任何活跃目标都不可达",
+    "collector.detail.stale": "可达但已死：近 {days} 天推进 {refcount} 次，连续推迟 {skips} 次",
+    # notify.py
+    "notify.error.empty_topic": "ntfy topic 不能为空",
+    "notify.error.invalid_priority": "priority 必须在 1~5 之间",
+    "notify.error.http": "ntfy 返回 {code}：{reason}",
+    "notify.error.network": "ntfy 推送失败：{error}",
+    # watcher.py
+    "watcher.error.ntfy_disabled": "Watcher 需要先在配置里开启 notify.ntfy_enabled 并配置 ntfy_topic",
+    "watcher.lock.already_running": "todogc watch：检测到另一个 watcher 正在运行，本进程不再重复推送",
+    "watcher.push.failed": "todogc watch：「{title}」{error}",
+    "watcher.push.event.title.one": "TodoGC · 新增候选",
+    "watcher.push.event.title.other": "TodoGC · {count} 项新增候选",
+    "watcher.push.event.line": "{icon} #{task_id} {title} —— {detail}",
+    "watcher.push.heap_usage": "堆占用 {size}/{max} ({pct}%)",
+    "watcher.push.heap_alarm.title": "TodoGC · 堆占用告警",
+    "watcher.push.heap_alarm.body": "🚨 -Xmx 逼近上限：{size}/{max} ({pct}%)",
+    "watcher.push.digest.title": "TodoGC · 定时体检",
+    "watcher.push.digest.body": "候选 {count} 个 · 堆占用 {size}/{max} ({pct}%)",
+    # cli.py: generic errors
+    "cli.error": "✗ {error}",
+    "cli.error.not_found": "✗ 没有 #{id}",
+    "cli.error.config": "✗ 配置错误：{error}",
+    # cli.py: run_ceremony
+    "cli.ceremony.finalize_spent": "finalize() already called —— 上次复活过，这次没得聊",
+    "cli.ceremony.silent_collect": "(沉默回收，未留遗言)",
+    # cli.py: add
+    "cli.add.heap_full": "[GC (Allocation Failure)] 活跃堆 {size}/{max} 已满——想分配新对象，先回收。",
+    "cli.add.hint_gc_or_force": "→ 跑 `todogc gc` 处置这些僵尸腾出空间，或 `add --force` 强行超配。",
+    "cli.add.full_gc_no_candidates": "[Full GC (Ergonomics)] 且没有可回收的僵尸——-Xmx 已拉满，GC 无力回天。",
+    "cli.add.hint_cut_scope": "→ 砍需求，不是加内存(真要硬来：add --force)。",
+    "cli.add.allocated": "分配 #{id}: {title}{tag}",
+    # cli.py: root
+    "cli.root.off": "#{id} 已取消 root",
+    "cli.root.on": "#{id} 设为 ★root",
+    # cli.py: dep
+    "cli.dep.removed": "删除理由边 #{task_id} → #{ref_id}",
+    "cli.dep.added": "#{task_id} 的理由 → #{ref_id}",
+    # cli.py: ls
+    "cli.ls.empty_heap": "(空堆)",
+    # cli.py: progress
+    "cli.progress.done": "#{id} +1 refcount。这才算数。",
+    # cli.py: snooze
+    "cli.snooze.done": "#{id} 又往后推了一次。skip_count +1，它在记账。",
+    # cli.py: gc
+    "cli.gc.stw_banner": "\n—— Stop-the-world：世界暂停，逐个处置 ——",
+    "cli.gc.prompt_choice": "    [r]复活  [c]回收  [s]跳过 > ",
+    "cli.gc.prompt_eulogy": "    finalize() 遗言(回车=沉默回收) > ",
+    "cli.gc.no_root_to_revive": "    ⚠ 没有 root 可复活到，先 add --root；本次按原样保留。",
+    "cli.gc.ceremony_done": "\n[GC] 仪式结束：复活 {revived} · 回收 {collected} · 跳过 {skipped}",
+    # cli.py: web
+    "cli.web.not_installed": "未安装 streamlit —— Web 端是可选功能。\n  安装：pip install -e \".[web]\"\n  再跑：todogc web",
+    "cli.web.starting": "启动 Web 端(库 {db} · -Xmx {heap_max}) —— Ctrl-C 停止",
+    # cli.py: watch
+    "cli.watch.not_configured": (
+        "未开启定时体检推送 —— 先在 todogc.toml 配置：\n"
+        "  [notify]\n"
+        "  ntfy_enabled = true\n"
+        '  ntfy_topic = "你的-topic"\n'
+        "再跑 todogc watch"
+    ),
+    "cli.watch.starting": "todogc watch 启动(库 {db} · 每 {poll_seconds}s 体检一次) —— Ctrl-C 停止",
+    "cli.watch.stopped": "todogc watch 已停止",
+    # cli.py: graveyard
+    "cli.graveyard.empty": "墓园空空。你还没对自己诚实过。",
+    "cli.graveyard.entry": "† {title}   存活 {days}d · 推进 {refcount} · 查看 {views}",
+    "cli.graveyard.epitaph": "  「{note}」",
+    # cli.py: restore
+    "cli.restore.not_collected": "✗ #{id} 尚未被回收",
+    "cli.restore.invalid_root": "恢复目标 #{root_id} 不存在或已回收",
+    "cli.restore.self_link": "任务不能恢复到自己下面",
+    "cli.restore.done": "#{id} 已恢复。手滑难免，这次不算自欺。",
+    # cli.py: edit
+    "cli.edit.needs_field": "✗ edit 至少需要新标题或 --ref",
+    "cli.edit.done": "#{id} 已更新：{title} [{ref}]",
+    # cli.py: link
+    "cli.link.unlinked": "#{id} 已解除关联",
+    "cli.link.needs_root_id": "link 需要 root_id，或使用 --off",
+    "cli.link.linked": "#{id} 已关联到 #{root_id}",
+    # cli.py: argparse type parsers
+    "cli.parse.time_range_invalid": "时间范围应为 30d 或正整数",
+    "cli.parse.time_range_positive": "时间范围必须大于 0",
+    "cli.parse.must_be_positive_int": "必须是正整数",
+    "cli.parse.must_be_positive": "必须大于 0",
+    # cli.py: argparse help text
+    "cli.help.description": "用 GC 冷酷回收你永远不会做的任务。",
+    "cli.help.db": "数据库路径",
+    "cli.help.config": "配置文件路径(默认 todogc.toml)",
+    "cli.help.heap_max": "活跃堆上限(-Xmx)，满则触发 Allocation Failure",
+    "cli.help.max_skips": "连续推迟阈值",
+    "cli.help.lang": "输出语言(en/zh)",
+    "cli.help.cmd_add": "录入一个任务",
+    "cli.help.add_root_id": "关联到的父/目标 id",
+    "cli.help.add_root": "本身设为活跃 root",
+    "cli.help.add_meta": "标为元任务(Metaspace)",
+    "cli.help.add_ref": "引用强度",
+    "cli.help.add_force": "堆满时强行超配(跳过 Allocation Failure)",
+    "cli.help.cmd_root": "标记/取消活跃 root",
+    "cli.help.root_off": "取消 root",
+    "cli.help.cmd_dep": "记录/删除一条理由边(task 的理由是 ref)",
+    "cli.help.cmd_ls": "列出任务",
+    "cli.help.cmd_progress": "记一次真推进",
+    "cli.help.cmd_snooze": "推迟一个任务",
+    "cli.help.cmd_gc": "触发垃圾回收 + 回收仪式",
+    "cli.help.gc_full": "渲染为 Full GC",
+    "cli.help.gc_dry_run": "只出报告，不进仪式",
+    "cli.help.cmd_heap": "打印分代堆内存图(僵尸标红)",
+    "cli.help.cmd_web": "启动 Streamlit Web 端(堆内存图 + 交互，需 [web] extra)",
+    "cli.help.web_port": "Web 端端口(默认 streamlit 的 8501)",
+    "cli.help.cmd_watch": "定时体检，状态跃迁/堆占用告警时推送 ntfy(需 [notify] 配置)",
+    "cli.help.cmd_graveyard": "悼词墙",
+    "cli.help.cmd_restore": "从垃圾桶恢复",
+    "cli.help.restore_root_id": "恢复时重新关联到父/目标",
+    "cli.help.cmd_show": "查看任务详情",
+    "cli.help.cmd_history": "查看任务事件时间线",
+    "cli.help.cmd_edit": "编辑标题或引用强度",
+    "cli.help.cmd_link": "关联或解除父/目标",
+    "cli.help.cmd_doctor": "诊断认知内存泄漏",
+    "cli.help.cmd_stats": "查看 GC 历史统计",
+    "cli.help.stats_since": "例如 30d",
+    # webapp.py: shared fields
+    "webapp.field.title": "标题",
+    "webapp.field.ref_strength": "引用强度",
+    # webapp.py: page/sidebar chrome
+    "webapp.page.title": "TodoGC · 堆内存",
+    "webapp.sidebar.db_caption": "DB：`{db}`",
+    "webapp.sidebar.watcher_running": "🔔 后台体检运行中 · 每 {poll_seconds}s · ntfy `{topic}`",
+    "webapp.sidebar.watcher_disabled": "🔕 未配置 [notify]，后台定时体检未启用",
+    "webapp.sidebar.heap_max_label": "-Xmx（活跃堆上限）",
+    "webapp.sidebar.full_checkbox": "以 Full GC 视角渲染日志",
+    "webapp.sidebar.mode_label": "GC 策略",
+    "webapp.main.heap_title": "堆内存快照 · jmap -heap",
+    "webapp.main.gc_log_subheader": "GC 日志",
+    "webapp.main.ceremony_subheader": "Stop-the-world 回收仪式",
+    "webapp.main.task_manager_subheader": "任务详情 · history/edit/progress",
+    "webapp.main.stats_subheader": "GC 历史 · stats",
+    "webapp.main.graveyard_subheader": "墓园 · graveyard",
+    # webapp.py: heap view
+    "webapp.heap.progress": "-Xmx 占用 {used}/{max} obj · {pct}%　(Metaspace 不计)",
+    "webapp.heap.legend": "图例：★ root · ☠ 回收候选(僵尸) · ⊛ 元任务",
+    "webapp.heap.empty_section": ":gray[(空)]",
+    # webapp.py: report
+    "webapp.report.candidates_expander": "候选清单文本 ({count} 项)",
+    # webapp.py: ceremony
+    "webapp.ceremony.no_candidates": "无回收候选。这次你居然没骗自己，难得。",
+    "webapp.ceremony.choice.skip": "跳过",
+    "webapp.ceremony.choice.revive": "复活",
+    "webapp.ceremony.choice.collect": "回收",
+    "webapp.ceremony.decide_label": "处置",
+    "webapp.ceremony.eulogy_label": "遗言",
+    "webapp.ceremony.eulogy_placeholder": "finalize() 遗言(回收时留)",
+    "webapp.ceremony.execute_button": "▶ 执行 Stop-the-world 仪式",
+    "webapp.ceremony.done": "仪式结束：复活 {revived} · 回收 {collected} · 跳过 {skipped}",
+    # webapp.py: add
+    "webapp.add.subheader": "➕ 分配任务 (add)",
+    "webapp.add.root_checkbox": "设为活跃 root（★ 目标）",
+    "webapp.add.root_id_label": "关联到 root-id（0 = 不关联）",
+    "webapp.add.meta_checkbox": "元任务（Metaspace，不计 -Xmx）",
+    "webapp.add.force_checkbox": "--force 强行超配",
+    "webapp.add.submit_button": "分配",
+    "webapp.add.heap_full": "[GC · Allocation Failure] 活跃堆 {size}/{max} 已满——先回收再分配。",
+    "webapp.add.hint_gc_or_force": "→ 到主区跑 Stop-the-world 处置僵尸腾空间，或勾 --force 强行超配。",
+    "webapp.add.full_gc_no_candidates": "[Full GC · Ergonomics] 且无可回收——-Xmx 拉满，砍需求而非加内存。",
+    "webapp.add.allocated": "分配 #{id}: {title}",
+    # webapp.py: graveyard
+    "webapp.graveyard.entry": "† **{title}**   存活 {days}d · 推进 {refcount} · 查看 {views}",
+    "webapp.graveyard.epitaph": "「{note}」",
+    "webapp.graveyard.restore_button": "恢复",
+    # webapp.py: task manager
+    "webapp.task_manager.empty": "没有可管理的活跃任务。",
+    "webapp.task_manager.select_label": "选择任务",
+    "webapp.task_manager.note_label": "事件说明",
+    "webapp.task_manager.save_button": "保存编辑",
+    "webapp.task_manager.progress_button": "+1 真推进",
+    "webapp.task_manager.defer_button": "推迟",
+    "webapp.task_manager.parent_label": "关联到父/目标（0 = 解除）",
+    "webapp.task_manager.link_button": "更新关联",
+    "webapp.task_manager.dep_id_label": "理由/前置任务 ID",
+    "webapp.task_manager.dep_add_button": "添加理由边",
+    "webapp.task_manager.dep_remove_button": "删除理由边",
+    "webapp.task_manager.deps_prefix": "当前理由边：{deps}",
+    "webapp.task_manager.deps_none": "无",
+    "webapp.task_manager.timeline_expander": "事件时间线 ({count})",
+    # config.py
+    "config.error.read_failed": "无法读取配置 {path}: {error}",
+    "config.error.unsupported_value": "不支持的配置值：{value}",
+    "config.error.empty_section": "第 {lineno} 行：空 section",
+    "config.error.invalid_format": "第 {lineno} 行：配置格式无效",
+    "config.error.empty_key": "第 {lineno} 行：空配置键",
+    "config.error.must_be_positive_int": "{name} 必须是正整数",
+    "config.error.must_be_positive": "{name} 必须大于 0",
+    "config.error.must_be_bool": "{name} 必须是布尔值(true/false)",
+    "config.error.must_be_percent": "{name} 必须在 1~100 之间",
+    "config.error.gc_heap_sections": "[gc] 和 [heap] 必须是配置 section",
+    "config.error.i18n_section": "[i18n] 必须是配置 section",
+    "config.error.notify_watch_sections": "[notify] 和 [watch] 必须是配置 section",
+    "config.error.invalid_gc_mode": "gc.mode 必须是 gentle / normal / aggressive",
+    "config.error.invalid_lang": "i18n.lang 必须是 {langs} 之一",
+    "config.error.ntfy_topic_required": "notify.ntfy_enabled 为 true 时必须配置 notify.ntfy_topic",
+    # store.py
+    "store.error.insert_no_rowid": "SQLite INSERT 未返回 lastrowid",
+    "store.error.empty_title": "任务标题不能为空",
+    "store.error.self_link": "一个任务不能关联到自己",
+    "store.error.update_requires_persisted": "update_task 需要一个已落库(id 非空)的 Task",
+    "store.error.task_not_found": "任务 #{id} 不存在",
+    "store.error.task_already_collected": "任务 #{id} 已回收，请先 restore",
+    "store.error.self_dep": "一个任务不能把自己当理由(不允许自环)",
+}

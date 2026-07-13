@@ -106,7 +106,7 @@ def test_send_raises_notify_error_on_connection_refused():
 def test_send_rejects_priority_out_of_range():
     """priority 校验在真正发请求之前，越界直接 ValueError，不产生任何网络调用。"""
     channel = NtfyChannel(topic="todogc-x", server="http://127.0.0.1:1")
-    with pytest.raises(ValueError, match="1~5"):
+    with pytest.raises(ValueError, match="between 1 and 5"):
         channel.send("t", "m", priority=6)
 
 

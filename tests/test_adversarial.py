@@ -43,14 +43,14 @@ def test_collected_task_rejects_progress_and_live_restore(tmp_path, capsys, now)
         task.state = State.LIVE
         store.update_task(task)
     assert main(["--db", db, "restore", "1"]) == 1
-    assert "尚未被回收" in capsys.readouterr().err
+    assert "has not been collected" in capsys.readouterr().err
 
 
 def test_cli_rejects_bad_config_and_nonpositive_limits(tmp_path, capsys):
     bad = tmp_path / "bad.toml"
     bad.write_text("[heap]\nmax=0\n", encoding="utf-8")
     assert main(["--config", str(bad), "--db", str(tmp_path / "x.db"), "ls"]) == 2
-    assert "配置错误" in capsys.readouterr().err
+    assert "config error" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         main(["--heap-max", "0", "ls"])
 

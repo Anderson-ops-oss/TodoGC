@@ -10,6 +10,8 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from todogc.heap import ReferenceStrength, State, Task, TouchKind
+from todogc.i18n import DEFAULT_LOCALE
+from todogc.i18n import t as _t
 
 if TYPE_CHECKING:  # 仅类型标注用，避免运行期 collector→store 的硬依赖
     from todogc.store import Store
@@ -31,9 +33,9 @@ class GCPolicy:
 
     def __post_init__(self) -> None:
         if self.mode not in {"gentle", "normal", "aggressive"}:
-            raise ValueError("GC mode 必须是 gentle / normal / aggressive")
+            raise ValueError(_t("collector.error.invalid_mode"))
         if min(self.recent_days, self.max_skips, self.restore_grace_days) <= 0:
-            raise ValueError("GCPolicy 阈值必须大于 0")
+            raise ValueError(_t("collector.error.invalid_threshold"))
 
     @property
     def effective_recent_days(self) -> int:
@@ -141,16 +143,18 @@ class GCResult:
 class Collector:
     """标记-清除回收器：把一张任务引用图判成 存活 / 候选，并揪出循环引用。"""
 
-    def __init__(self, policy: GCPolicy | None = None) -> None:
+    def __init__(self, policy: GCPolicy | None = None, *, lang: str = DEFAULT_LOCALE) -> None:
         """构造回收器。
 
         Args:
             policy (GCPolicy | None): 判活口径；None 用默认(30 天 / 5 次)。
+            lang (str): candidate.detail 人话解释使用的语言，默认英文。
 
         Returns:
             None
         """
         self.policy = policy or GCPolicy()
+        self.lang = lang
 
     def collect(
         self,
@@ -188,22 +192,27 @@ class Collector:
                 if tid in cycle_of:
                     result.candidates.append(
                         Candidate(task, Reason.CYCLE, cycle_id=cycle_of[tid],
-                                  detail=f"陷在引用环 #{cycle_of[tid]}：互相担保，谁都不连 root")
+                                  detail=_t("collector.detail.cycle", lang=self.lang, cycle_id=cycle_of[tid]))
                     )
                 else:
                     result.candidates.append(
-                        Candidate(task, Reason.UNREACHABLE, detail="从任何活跃目标都不可达")
+                        Candidate(task, Reason.UNREACHABLE, detail=_t("collector.detail.unreachable", lang=self.lang))
                     )
             else:
                 m = metrics_of(tid)
                 if self._metrics_alive(task, m):
                     result.survivors.append(task)
                 else:
+                    skips = m.consecutive_skips if m.consecutive_skips is not None else m.skip_count
                     result.candidates.append(
                         Candidate(task, Reason.STALE, metrics=m,
-                                  detail=f"可达但已死：近 {self.policy.effective_recent_days} 天推进 "
-                                         f"{m.refcount_30d} 次，连续推迟 "
-                                         f"{m.consecutive_skips if m.consecutive_skips is not None else m.skip_count} 次")
+                                  detail=_t(
+                                      "collector.detail.stale",
+                                      lang=self.lang,
+                                      days=self.policy.effective_recent_days,
+                                      refcount=m.refcount_30d,
+                                      skips=skips,
+                                  ))
                     )
         return result
 

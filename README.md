@@ -13,6 +13,8 @@
 
 一个任务如果长期和你的真实目标"不可达"（从没推进、反复推迟），就会被标记为垃圾，触发一场逼你二选一的回收仪式——**复活**它，或者承认你这辈子不会做。
 
+*([English README here](README.en.md))*
+
 ---
 
 ## 核心隐喻
@@ -54,6 +56,7 @@ todogc ls                                    # 看看你的堆
 todogc heap                                  # 堆内存图：分代分布 + -Xmx 占用 + 僵尸标红(别名 jmap)
 todogc web                                   # 把这张堆图搬进浏览器 + 交互(需 [web]，见下)
 todogc watch                                 # 定时体检：状态跃迁/堆占用告警时推 ntfy(需 [notify]，见下)
+todogc --lang zh gc                          # 输出语言切换为中文(默认英文，见下 v0.4)
 todogc gc                                    # 触发回收 + Stop-the-world 仪式
 todogc gc --dry-run                          # 只出报告，不进仪式
 todogc graveyard                             # 悼词墙：看看你都埋了什么
@@ -175,6 +178,36 @@ heap_threshold_pct = 80          # 堆占用告警阈值(%)
 `notify.ntfy_enabled`)，它会在 web 服务进程里自动带一条同款后台线程，此时再手动开
 `todogc watch` 会检测到锁被占用、自动放弃，不会对同一份跃迁重复推送两遍。
 
+## v0.4：中英文双语(i18n)
+
+默认输出语言是**英文**；中文作为可选语言，三种途径切换，优先级从高到低(`--lang` >
+环境变量 > 配置文件 > 默认值)：
+
+```bash
+todogc --lang zh gc                  # 1) 命令行参数，只影响这一次调用
+TODOGC_LANG=zh todogc gc             # 2) 环境变量
+```
+
+```toml
+[i18n]
+lang = "zh"                          # 3) todogc.toml 里的持久化默认值
+```
+
+`todogc --help` 本身的文案也会跟着 `--lang`/环境变量切换；但如果只在配置文件里设置了
+语言、没传 `--lang` 也没设环境变量，`--help` 仍显示默认语言(读配置文件前需要先解析出
+`--config` 参数，这一步做不到"先读配置再决定 help 用什么语言")，命令实际执行的输出
+则会正确地跟着配置文件走。
+
+Web 端(`todogc web`)不读上面这套——它有自己的**按浏览器 session** 的语言切换器(侧栏
+顶部的 `Language / 语言` 下拉框)，默认值取自 `todogc.toml` 的 `[i18n] lang`，但切换只
+影响当前 session，不会写回配置文件、也不会影响其他人同时打开的页面。后台 `todogc watch`
+推送用的语言只认 `[i18n] lang`(或 `TODOGC_LANG`)，跟 Web 端 UI 显示语言是两回事——这样
+多人同时开着 Web 端也不会互相改到别人的推送语言。
+
+> 目前覆盖 CLI 输出与 `--help` 文案、Web 端界面文案、ntfy 推送文案、配置/存储层报错信息。
+> GC 日志、堆内存图、`doctor`/`stats` 的具体输出内容(`report.py`)暂时保留原样，不受
+> `--lang` 影响——这块还没做，欢迎 PR。
+
 ## 判活规则
 
 一个任务判为**存活**，当且仅当：
@@ -195,14 +228,16 @@ Metaspace 仍默认常驻，`doctor` 会单独审计它们是否正在制造认�
 ```
 todogc/
   config.py     todogc.toml + 环境变量配置（Python 3.10 仍保持零依赖）
+  i18n.py       轻量文案目录(t()/n_()) + 语言解析，零依赖替代 gettext
+  locales/      en.py / zh.py 两份文案字典(key 集合一致，由测试兜底)
   heap.py       领域模型(Task / Touch / 分代枚举)
   store.py      SQLite 持久化 + 自动埋点 + 判活指标
   collector.py  可达性标记 + Tarjan 抓环 + 判活清除
   report.py     JVM 风格 GC 日志 + 堆内存图(heap_view 视图模型，CLI/Web 共用) + 候选 + 打脸
   notify.py     ntfy 推送渠道(JSON 发布，零依赖，纯 urllib)
   watcher.py    定时体检核心：事件驱动 + 去抖 + 心跳摘要 + 单实例建议性锁
-  cli.py        命令行 + Stop-the-world 回收仪式 + todogc watch
-  webapp.py     Streamlit Web 端(堆内存图 + add/gc/restore 交互 + 自动挂载 watcher，可选)
+  cli.py        命令行 + Stop-the-world 回收仪式 + todogc watch + --lang
+  webapp.py     Streamlit Web 端(堆内存图 + add/gc/restore 交互 + 自动挂载 watcher + 语言切换，可选)
 ```
 
 ## 测试
@@ -220,8 +255,8 @@ pytest
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # 产出 dist/todogc-0.3.0-py3-none-any.whl 与 .tar.gz
-pip install dist/todogc-0.3.0-py3-none-any.whl   # 到哪都能装
+python -m build          # 产出 dist/todogc-0.4.0-py3-none-any.whl 与 .tar.gz
+pip install dist/todogc-0.4.0-py3-none-any.whl   # 到哪都能装
 ```
 
 `dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。
@@ -237,7 +272,12 @@ Leak Inspector、输入校验与对抗测试。
 **v0.3 已实现**：`todogc watch` 定时体检、ntfy 推送(事件驱动 + 去抖复议期 + 心跳摘要 +
 堆占用告警边沿触发)、单实例建议性锁、Web 端按配置自动挂载后台 watcher 线程。
 
-**后续候选（欢迎 PR）**：GitHub Issues/PR 同步、TODO/FIXME 导入、交互式引用图。
+**v0.4 已实现**：中英文双语，默认英文；`--lang`/环境变量/`todogc.toml` 三级优先级；Web
+端按 session 独立切换语言；CLI 输出、`--help`、Web 界面、ntfy 推送、配置/存储层报错全部
+覆盖(`report.py` 的 GC 日志/堆内存图暂不在内)。
+
+**后续候选（欢迎 PR）**：GitHub Issues/PR 同步、TODO/FIXME 导入、交互式引用图、`report.py`
+的 GC 日志/堆内存图文案纳入 i18n。
 
 > 说明：任务的"年龄"目前在**回收仪式里被复活时** +1（即"你逃过它几次"），而非每轮 GC 自动 +1。
 

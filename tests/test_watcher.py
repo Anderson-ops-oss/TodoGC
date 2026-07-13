@@ -111,7 +111,7 @@ def test_heap_alarm_is_edge_triggered(store, now):
 # ============ 推送消息文案(纯函数) ============
 
 def test_event_message_bundles_multiple_events_into_one_push():
-    """多条跃迁合并成一条推送；循环用 🔗、其余用 🆕，附带堆占用摘要。"""
+    """多条跃迁合并成一条推送(中文)；循环用 🔗、其余用 🆕，附带堆占用摘要。"""
     result = TickResult(
         events=[
             TickEvent(task_id=1, title="学吉他", status="stale", detail="可达但已死"),
@@ -120,21 +120,38 @@ def test_event_message_bundles_multiple_events_into_one_push():
         heap_size=3,
         heap_max=10,
     )
-    title, body = _event_message(result)
+    title, body = _event_message(result, lang="zh")
     assert title == "TodoGC · 2 项新增候选"
     assert "🆕 #1 学吉他 —— 可达但已死" in body
     assert "🔗 #2 学Rust —— 陷在引用环 #0" in body
     assert "堆占用 3/10 (30%)" in body
 
 
+def test_event_message_bundles_multiple_events_into_one_push_english_default():
+    """同一份数据用英文(默认语言)渲染——图标/占位符逻辑跟语言无关，措辞跟着 lang 走。"""
+    result = TickResult(
+        events=[
+            TickEvent(task_id=1, title="Learn guitar", status="stale", detail="Reachable but dead"),
+            TickEvent(task_id=2, title="Learn Rust", status="cycle:0", detail="Trapped in cycle #0"),
+        ],
+        heap_size=3,
+        heap_max=10,
+    )
+    title, body = _event_message(result, lang="en")
+    assert title == "TodoGC · 2 new candidates"
+    assert "🆕 #1 Learn guitar — Reachable but dead" in body
+    assert "🔗 #2 Learn Rust — Trapped in cycle #0" in body
+    assert "Heap usage 3/10 (30%)" in body
+
+
 def test_heap_alarm_message_format():
-    title, body = _heap_alarm_message(TickResult(heap_size=8, heap_max=10))
+    title, body = _heap_alarm_message(TickResult(heap_size=8, heap_max=10), lang="zh")
     assert title == "TodoGC · 堆占用告警"
     assert "8/10 (80%)" in body
 
 
 def test_digest_message_format():
-    title, body = _digest_message(TickResult(candidate_count=5, heap_size=2, heap_max=10))
+    title, body = _digest_message(TickResult(candidate_count=5, heap_size=2, heap_max=10), lang="zh")
     assert title == "TodoGC · 定时体检"
     assert "候选 5 个" in body and "20%" in body
 
@@ -164,7 +181,7 @@ def test_run_once_sends_only_the_event_push_when_nothing_else_due(store, now):
 
     assert len(fake.calls) == 1
     call = fake.calls[0]
-    assert call["title"] == "TodoGC · 新增候选"
+    assert call["title"] == "TodoGC · New candidate"
     assert call["priority"] == 4
     assert call["tags"] == ["skull"]
 
@@ -181,8 +198,8 @@ def test_run_once_sends_all_three_categories_and_swallows_failures(store, now, c
     watcher._run_once(store, now)  # 不应抛出
 
     titles = {c["title"] for c in fake.calls}
-    assert titles == {"TodoGC · 新增候选", "TodoGC · 堆占用告警", "TodoGC · 定时体检"}
-    assert capsys.readouterr().err.count("todogc watch：") == 3
+    assert titles == {"TodoGC · New candidate", "TodoGC · Heap usage alert", "TodoGC · Scheduled checkup"}
+    assert capsys.readouterr().err.count("todogc watch:") == 3
 
 
 def test_digest_due_respects_interval(store, now):

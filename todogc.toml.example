@@ -7,6 +7,9 @@ restore_grace_days = 7
 [heap]
 max = 50
 
+[i18n]
+lang = "en"                # en / zh；CLI 启动语言与 Watcher 推送语言，Web 端语言在页面里单独切换
+
 [notify]
 ntfy_enabled = false
 ntfy_server = "https://ntfy.sh"

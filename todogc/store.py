@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from todogc.heap import Generation, ReferenceStrength, State, Task, Touch, TouchKind
+from todogc.i18n import t as _t
 
 # 计入 refcount 的事件类型值：复用 TouchKind.is_progress 这一单一口径，不在此重复定义。
 _PROGRESS_KIND_VALUES: tuple[str, ...] = tuple(k.value for k in TouchKind if k.is_progress)
@@ -250,7 +251,7 @@ class Store:
         """取得 INSERT 主键；驱动未返回主键时给出明确错误。"""
         row_id = cur.lastrowid
         if row_id is None:
-            raise RuntimeError("SQLite INSERT 未返回 lastrowid")
+            raise RuntimeError(_t("store.error.insert_no_rowid"))
         return row_id
 
     @staticmethod
@@ -318,7 +319,7 @@ class Store:
         """
         title = title.strip()
         if not title:
-            raise ValueError("任务标题不能为空")
+            raise ValueError(_t("store.error.empty_title"))
         now = ts or self._now()
         strength = ReferenceStrength(ref_strength)
         if root_id is not None:
@@ -415,7 +416,7 @@ class Store:
             None
         """
         if task_id == root_id:
-            raise ValueError("一个任务不能关联到自己")
+            raise ValueError(_t("store.error.self_link"))
         self._require_live_task(task_id)
         self._require_live_task(root_id)
         self._conn.execute("UPDATE task SET root_id = ? WHERE id = ?", (root_id, task_id))
@@ -438,7 +439,7 @@ class Store:
             ValueError: 当 task.id 为 None(尚未落库)时。
         """
         if task.id is None:
-            raise ValueError("update_task 需要一个已落库(id 非空)的 Task")
+            raise ValueError(_t("store.error.update_requires_persisted"))
         self._conn.execute(
             "UPDATE task SET title = ?, root_id = ?, gen = ?, age = ?, state = ?, ref_strength = ? WHERE id = ?",
             (
@@ -461,7 +462,7 @@ class Store:
         if title is not None:
             title = title.strip()
             if not title:
-                raise ValueError("任务标题不能为空")
+                raise ValueError(_t("store.error.empty_title"))
             task.title = title
         if ref_strength is not None:
             task.ref_strength = ReferenceStrength(ref_strength)
@@ -480,10 +481,10 @@ class Store:
         """取存活任务，否则抛出面向用户的 ValueError。"""
         row = self._conn.execute("SELECT * FROM task WHERE id = ?", (task_id,)).fetchone()
         if row is None:
-            raise ValueError(f"任务 #{task_id} 不存在")
+            raise ValueError(_t("store.error.task_not_found", id=task_id))
         task = self._row_to_task(row)
         if task.state is State.COLLECTED:
-            raise ValueError(f"任务 #{task_id} 已回收，请先 restore")
+            raise ValueError(_t("store.error.task_already_collected", id=task_id))
         return task
 
     # ---- roots 与"理由"边(方案 A) ----
@@ -527,7 +528,7 @@ class Store:
             ValueError: 当 task_id == ref_id(自环)，或 task_id / ref_id 指向不存在的任务时。
         """
         if task_id == ref_id:
-            raise ValueError("一个任务不能把自己当理由(不允许自环)")
+            raise ValueError(_t("store.error.self_dep"))
         self._require_live_task(task_id)
         self._require_live_task(ref_id)
         self._conn.execute(

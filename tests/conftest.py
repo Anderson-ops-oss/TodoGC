@@ -6,7 +6,19 @@ from datetime import datetime, timezone
 
 import pytest
 
+from todogc import i18n
 from todogc.store import Store
+
+
+@pytest.fixture(autouse=True)
+def _reset_i18n_locale():
+    """main()/set_locale() 会改全局当前语言；每个测试结束都归零，避免跨测试污染。
+
+    Yields:
+        None
+    """
+    yield
+    i18n.set_locale(i18n.DEFAULT_LOCALE)
 
 
 @pytest.fixture
