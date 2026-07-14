@@ -38,9 +38,12 @@ def test_gc_log_young_and_full(store, now):
         res, gc_id=7, uptime=timedelta(days=3, hours=12), pause=timedelta(seconds=252), heap_max=50
     )
     assert "GC(7) Pause Young (Allocation Failure)" in y
-    assert "运行 3d12h" in y and "释放认知内存" in y and "00:04:12" in y
-    assert "reference cycle: 1 处" in y and "学 Rust" in y
+    assert "uptime 3d12h" in y and "cognitive memory freed" in y and "00:04:12" in y
+    assert "reference cycle: 1 found" in y and "学 Rust" in y
     assert "Pause Full (Ergonomics)" in report.format_gc_log(res, pause_full=True)
+
+    zh = report.format_gc_log(res, uptime=timedelta(days=3, hours=12), lang="zh")
+    assert "运行 3d12h" in zh and "释放认知内存" in zh and "reference cycle: 1 处" in zh
 
 
 def test_duration_format():
@@ -50,18 +53,24 @@ def test_duration_format():
 
 def test_generation_taunt_tiers():
     """打脸文案按分代/年龄分档。"""
-    assert report.generation_taunt(Generation.EDEN, 0) == "岁月静好。"
-    assert "幸存者" in report.generation_taunt(Generation.SURVIVOR, 1)
-    assert report.generation_taunt(Generation.SURVIVOR, 5) == "老油条预备役，你已跳过它 5 次。"
+    assert report.generation_taunt(Generation.EDEN, 0) == "All quiet."
+    assert "survivor" in report.generation_taunt(Generation.SURVIVOR, 1)
+    assert report.generation_taunt(Generation.SURVIVOR, 5) == "Veteran-in-waiting — you've skipped it 5 times."
     assert "Tenured" in report.generation_taunt(Generation.OLD, 15)
-    assert "人设" in report.generation_taunt(Generation.META, 99)
+    assert "personality" in report.generation_taunt(Generation.META, 99)
+
+    assert report.generation_taunt(Generation.EDEN, 0, lang="zh") == "岁月静好。"
+    assert "人设" in report.generation_taunt(Generation.META, 99, lang="zh")
 
 
 def test_candidates_grouping(store, now):
     """候选清单按 环 / 不可达 / 陈旧 分组，并能注入 views_of 打脸。"""
     res = _result(store, now)
     txt = report.format_candidates(res, views_of=store.view_count)
-    assert "互相担保" in txt and "unreachable" in txt and "stale" in txt
+    assert "mutually vouching" in txt and "unreachable" in txt and "stale" in txt
+
+    zh = report.format_candidates(res, views_of=store.view_count, lang="zh")
+    assert "互相担保" in zh and "unreachable" in zh and "stale" in zh
 
 
 def test_format_report_accepts_typed_log_options(store, now):
@@ -73,7 +82,7 @@ def test_format_report_accepts_typed_log_options(store, now):
         pause_full=True,
         views_of=store.view_count,
     )
-    assert "GC(9) Pause Full" in txt and "上限 20" in txt
+    assert "GC(9) Pause Full" in txt and "cap 20" in txt
 
 
 def test_heap_map(store, now):
@@ -90,8 +99,8 @@ def test_heap_map(store, now):
     res = Collector().run_on_store(store, store.root_ids(), extra_edges=store.deps(), now=now)
 
     txt = report.format_heap_map(res, store.root_ids(), heap_max=50)
-    assert "堆内存快照" in txt and "jmap" in txt
-    assert "-Xmx 占用: 6 / 50" in txt  # 6 个非 meta 对象；Metaspace 不计入 -Xmx
+    assert "Heap Memory Snapshot" in txt and "jmap" in txt
+    assert "-Xmx usage: 6 / 50" in txt  # 6 个非 meta 对象；Metaspace 不计入 -Xmx
     assert f"★ #{goal.id} G" in txt
     assert f"☠ #{a.id} 学 Rust  (cycle #0)" in txt
     assert "(unreachable)" in txt and "(stale" in txt
@@ -100,7 +109,10 @@ def test_heap_map(store, now):
     assert "█" in txt and "░" in txt  # -Xmx 占用填充条
 
     plain = report.format_heap_map(res, store.root_ids())  # 不给 -Xmx 的变体
-    assert "堆对象: 6 个" in plain and "未设 -Xmx" in plain
+    assert "heap objects: 6" in plain and "no -Xmx set" in plain
+
+    zh = report.format_heap_map(res, store.root_ids(), heap_max=50, lang="zh")
+    assert "堆内存快照" in zh and "-Xmx 占用: 6 / 50" in zh
 
 
 def test_heap_view(store, now):
@@ -155,4 +167,5 @@ def test_heap_view(store, now):
     # candidate_note 三种原因的短注解(与文本堆图括号内容同源)
     assert report.candidate_note(row[a.id].candidate) == "cycle #0"
     assert report.candidate_note(row[orphan.id].candidate) == "unreachable"
-    assert report.candidate_note(row[s.id].candidate) == "stale · 推进0 推迟0"
+    assert report.candidate_note(row[s.id].candidate) == "stale · progressed 0 skipped 0"
+    assert report.candidate_note(row[s.id].candidate, lang="zh") == "stale · 推进0 推迟0"

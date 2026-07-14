@@ -186,7 +186,7 @@ def test_run_once_sends_only_the_event_push_when_nothing_else_due(store, now):
     assert call["tags"] == ["skull"]
 
 
-def test_run_once_sends_all_three_categories_and_swallows_failures(store, now, capsys):
+def test_run_once_sends_all_three_categories_and_swallows_failures(store, now, caplog):
     """事件 + 堆告警 + 心跳摘要都到齐时各发一条；渠道全部失败也不能让 tick 本身炸。"""
     root = store.add_task("G", is_root=True, ts=now - timedelta(days=40))
     store.add_task("僵尸", root_id=root.id, ts=now - timedelta(days=40))
@@ -195,11 +195,12 @@ def test_run_once_sends_all_three_categories_and_swallows_failures(store, now, c
     fake = _FakeChannel(fail=True)
     watcher._channel = fake  # pyright: ignore[reportAttributeAccessIssue]
 
-    watcher._run_once(store, now)  # 不应抛出
+    with caplog.at_level("WARNING", logger="todogc.watcher"):
+        watcher._run_once(store, now)  # 不应抛出
 
     titles = {c["title"] for c in fake.calls}
     assert titles == {"TodoGC · New candidate", "TodoGC · Heap usage alert", "TodoGC · Scheduled checkup"}
-    assert capsys.readouterr().err.count("todogc watch:") == 3
+    assert sum("todogc watch:" in record.getMessage() for record in caplog.records) == 3
 
 
 def test_digest_due_respects_interval(store, now):

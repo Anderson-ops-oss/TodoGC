@@ -1,4 +1,5 @@
-# console.py —— 可选的 rich 彩色渲染层：装了 rich 就上色，没装就回退纯文本(核心零依赖不受影响)。
+# console.py — optional rich-based color rendering layer: renders in color if rich is
+# installed, falls back to plain text if not (the core stays dependency-free either way).
 
 from __future__ import annotations
 
@@ -24,20 +25,20 @@ else:
         from rich.theme import Theme
 
         _HAVE_RICH = True
-    except ImportError:  # rich 未安装：一切回退纯文本
+    except ImportError:  # rich not installed: everything falls back to plain text
         _HAVE_RICH = False
 
 
 def have_rich() -> bool:
-    """rich 是否可用。
+    """Whether rich is available.
 
     Returns:
-        bool: 安装了 rich 为 True。
+        bool: True if rich is installed.
     """
     return _HAVE_RICH
 
 
-# 分代 / 状态 → 颜色。
+# Generation / state -> color.
 _GEN_STYLE = {
     Generation.EDEN: "green",
     Generation.SURVIVOR: "yellow",
@@ -54,7 +55,7 @@ _STATE_STYLE = {
 if _HAVE_RICH:
 
     class _GCHighlighter(RegexHighlighter):
-        """给 GC 日志 / 候选清单里的关键字上色(纯正则匹配，不靠文本里的方括号)。"""
+        """Highlights keywords in the GC log / candidate listing (plain regex matching, doesn't rely on brackets in the text)."""
 
         base_style = "gc."
         highlights = [
@@ -66,8 +67,10 @@ if _HAVE_RICH:
             r"(?P<oom>Allocation Failure|Ergonomics|无力回天)",
             r"(?P<pct>释放认知内存 [\d.]+%)",
             r"(?P<zombie>\d+ zombies)",
-            # —— 堆内存图(format_heap_map)：僵尸行标红是核心诉求，其余为点缀。
-            # 用 │\s+ 作前缀锚点(只匹配对象行、放过图例行)，仅命名组内的文本被上色。
+            # -- Heap map (format_heap_map): highlighting zombie rows in red is the core
+            # requirement, the rest is decoration. Uses │\s+ as a prefix anchor (matches only
+            # object rows, skips the legend row); only the text inside the named group gets
+            # colored.
             r"│\s+(?P<heap_zombie>☠[^\n]*)",
             r"│\s+(?P<heap_root>★)",
             r"│\s+(?P<heap_meta>⊛)",
@@ -95,13 +98,13 @@ if _HAVE_RICH:
 
 
 def _make_console(err: bool):
-    """构造带主题与高亮的 rich Console。
+    """Build a rich Console with the theme and highlighter wired up.
 
     Args:
-        err (bool): True 输出到 stderr，否则 stdout。
+        err (bool): True to write to stderr, otherwise stdout.
 
     Returns:
-        Console | None: rich 可用时返回 Console，否则 None。
+        Console | None: a Console if rich is available, otherwise None.
     """
     if not _HAVE_RICH:
         return None
@@ -109,14 +112,16 @@ def _make_console(err: bool):
 
 
 def print_text(text: str, *, err: bool = False) -> bool:
-    """带高亮打印一段 GC 日志 / 候选文本；关掉 markup 以免文本里的方括号被误解析。
+    """Print a GC log / candidate listing with highlighting; markup is disabled so brackets
+    in the text aren't misparsed as rich markup.
 
     Args:
-        text (str): report 生成的纯文本。
-        err (bool): 是否输出到 stderr。
+        text (str): plain text produced by report.
+        err (bool): whether to write to stderr.
 
     Returns:
-        bool: True=已用 rich 打印；False=rich 不可用，需调用方回退纯文本。
+        bool: True if printed via rich; False if rich isn't available and the caller needs
+            to fall back to plain text.
     """
     c = _make_console(err)
     if c is None:
@@ -126,14 +131,16 @@ def print_text(text: str, *, err: bool = False) -> bool:
 
 
 def render_ls(tasks: Iterable[Task], root_ids: set[int]) -> bool:
-    """把任务列表渲染成彩色表格(分代 / 状态按色区分，root 标 ★)。
+    """Render the task list as a color table (generation / state distinguished by color,
+    root marked with ★).
 
     Args:
-        tasks (Iterable[Task]): 待渲染任务。
-        root_ids (set[int]): 活跃 root 的 id 集合。
+        tasks (Iterable[Task]): tasks to render.
+        root_ids (set[int]): ids of the active roots.
 
     Returns:
-        bool: True=已用 rich 渲染；False=rich 不可用，需回退纯文本。
+        bool: True if rendered via rich; False if rich isn't available and the caller needs
+            to fall back to plain text.
     """
     if not _HAVE_RICH:
         return False

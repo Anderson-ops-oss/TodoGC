@@ -233,4 +233,58 @@ MESSAGES: dict[str, str] = {
     "store.error.task_not_found": "Task #{id} does not exist",
     "store.error.task_already_collected": "Task #{id} already collected, restore it first",
     "store.error.self_dep": "A task cannot use itself as its own reason (no self-loops)",
+    # report.py: generation_taunt
+    "report.taunt.meta": "Permanent meta-task. This isn't a todo, it's your personality.",
+    "report.taunt.tenured": "Tenured. Congratulations, you've turned self-deception into a long-term strategy.",
+    "report.taunt.veteran": "Veteran-in-waiting — you've skipped it {age} times.",
+    "report.taunt.survivor": "Young gen survivor, still young, still salvageable.",
+    "report.taunt.calm": "All quiet.",
+    # report.py: format_gc_log
+    "report.gc_log.cap_suffix": " (cap {heap_max})",
+    "report.gc_log.header": "[uptime {uptime}][info][gc] GC({gc_id}) Pause {kind} ({cause})",
+    "report.gc_log.active_heap": "  active heap    : {total} -> {after} tasks{cap}",
+    "report.gc_log.reclaimed": "  reclaimed      : {reclaim} zombies   →  cognitive memory freed {pct}%",
+    "report.gc_log.cycles": "  reference cycle: {count} found  {names}",
+    "report.gc_log.pause": (
+        "  pause time     : {duration}   "
+        "(the real time you spent agonizing over each one at the ceremony)"
+    ),
+    "report.gc_log.times": "  [Times: anxiety={anxiety}h  self-blame={blame}h  actual progress=0.0h]",
+    # report.py: format_candidates
+    "report.candidates.header": "━━ Reclaim candidates ({count} items) ━━━━━━━━━━━━━━━━",
+    "report.candidates.cycle_line": "[reference cycle #{id}] mutually vouching for each other, none reaches a root:",
+    "report.candidates.unreachable_line": "[unreachable] unreachable from any active target:",
+    "report.candidates.stale_line": "[stale] reachable, but its liveness signal is dead:",
+    "report.candidates.recent_progress": "progressed {count} times recently",
+    "report.candidates.consecutive_skips": "skipped {count} times in a row",
+    "report.candidates.viewed": "viewed {count} times",
+    "report.candidates.empty": "   (No candidates. You actually didn't lie to yourself this time — rare.)",
+    # report.py: format_heap_map
+    "report.heap_map.title": "━━ Heap Memory Snapshot · jmap -heap ━━━━━━━━━━━━━━━━",
+    "report.heap_map.usage_with_max": "  -Xmx usage: {used} / {max} obj  {bar} {pct}%   (Metaspace excluded)",
+    "report.heap_map.usage_no_max": "  heap objects: {used} (no -Xmx set)   (Metaspace excluded)",
+    "report.heap_map.empty_row": "  │   (empty)",
+    "report.heap_map.legend": "  Legend: ★ root · ☠ reclaim candidate (zombie) · ⊛ meta-task",
+    # report.py: candidate_note
+    "report.candidate_note.stale_detail": "stale · progressed {progress} skipped {skips}",
+    # report.py: format_doctor
+    "report.doctor.viewed_no_progress": "viewed {views} times but never progressed",
+    "report.doctor.advice.rename_actionable": "Rename it to something you can execute within 30 minutes",
+    "report.doctor.consecutive_skips": "skipped {skips} times in a row",
+    "report.doctor.advice.progress_or_admit": "Make real progress right now, or admit it should be reclaimed",
+    "report.doctor.old_zero_progress": "Old Generation age={age} with zero progress",
+    "report.doctor.advice.downgrade_weak": "Downgrade to a weak reference",
+    "report.doctor.churn": "{churn} collect/revive/restore events — looks like GC thrashing",
+    "report.doctor.advice.relink_or_collect": "Re-link it to a clear root, or reclaim it for good",
+    "report.doctor.in_cycle": "sits in an unreachable reference cycle #{cycle_id}",
+    "report.doctor.advice.break_cycle": "Break the circular reason-dependency",
+    "report.doctor.unreachable_from_roots": "unreachable from every active root",
+    "report.doctor.advice.link_or_collect": "Link it to a real goal, or reclaim it right now",
+    "report.doctor.stale_by_policy": "reachable, but the current GC policy already flags it as stale",
+    "report.doctor.advice.log_progress_or_adjust": "Log real progress, adjust its reference strength, or reclaim it",
+    "report.doctor.is_root": "this object is itself a GC root",
+    "report.doctor.ok": "[OK] No obvious cognitive memory leaks detected.",
+    # report.py: format_stats
+    "report.stats.empty": "No GC history yet. Run a non-dry-run `todogc gc` first.",
+    "report.stats.title": "━━ GC History Stats ━━━━━━━━━━━━━━━━━━━",
 }

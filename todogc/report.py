@@ -1,4 +1,5 @@
-# report.py —— 展示层：把一次 GC 的 GCResult 渲染成 JVM 风格 GC 日志、回收候选清单，以及分代打脸文案。
+# report.py — presentation layer: renders a GC's GCResult as a JVM-flavored GC log, the
+# reclaim candidate listing, and the per-generation taunts.
 
 from __future__ import annotations
 
@@ -9,17 +10,18 @@ from enum import Enum
 
 from todogc.collector import Candidate, GCResult, Reason
 from todogc.heap import TENURING_THRESHOLD, Generation, State, Task, TouchKind
+from todogc.i18n import t as _t
 from todogc.store import GCRun, Store
 
 
 def _fmt_uptime(td: timedelta | None) -> str:
-    """把"堆运行时长"格式化成 GC 日志头里的紧凑形式。
+    """Format "heap uptime" into the compact form used in the GC log header.
 
     Args:
-        td (timedelta | None): 距最早任务创建至今的时长；None 表示未知。
+        td (timedelta | None): time since the earliest task was created; None if unknown.
 
     Returns:
-        str: 形如 "3d12h" 的字符串；td 为 None 时返回 "—"。
+        str: a string like "3d12h"; "—" if td is None.
     """
     if td is None:
         return "—"
@@ -27,37 +29,38 @@ def _fmt_uptime(td: timedelta | None) -> str:
 
 
 def _fmt_duration(td: timedelta) -> str:
-    """把仪式暂停时长格式化成 HH:MM:SS。
+    """Format the ceremony's pause duration as HH:MM:SS.
 
     Args:
-        td (timedelta): 暂停(回收仪式)持续时间。
+        td (timedelta): how long the pause (collection ceremony) lasted.
 
     Returns:
-        str: 形如 "00:04:12" 的字符串。
+        str: a string like "00:04:12".
     """
     s = int(td.total_seconds())
     return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
 
-def generation_taunt(gen: Generation, age: int) -> str:
-    """按分代与年龄产出一句打脸文案(age→幸存者/老油条/Tenured/Metaspace 的梯度)。
+def generation_taunt(gen: Generation, age: int, *, lang: str | None = None) -> str:
+    """Produce a taunt keyed off generation and age (age -> survivor/veteran/Tenured/Metaspace).
 
     Args:
-        gen (Generation): 任务当前分代。
-        age (int): 熬过的 GC 轮数。
+        gen (Generation): the task's current generation.
+        age (int): how many GC rounds it has survived.
+        lang (str | None): output language; None uses the current global/default.
 
     Returns:
-        str: 对应梯度的吐槽文案。
+        str: the taunt for that tier.
     """
     if gen is Generation.META:
-        return "元任务常驻。这不是待办，是你的人设。"
+        return _t("report.taunt.meta", lang=lang)
     if gen is Generation.OLD or age >= TENURING_THRESHOLD:
-        return "已 Tenured。恭喜，把自欺做成了长期主义。"
+        return _t("report.taunt.tenured", lang=lang)
     if age >= 3:
-        return f"老油条预备役，你已跳过它 {age} 次。"
+        return _t("report.taunt.veteran", lang=lang, age=age)
     if age >= 1:
-        return "young gen 幸存者，还年轻，还有救。"
-    return "岁月静好。"
+        return _t("report.taunt.survivor", lang=lang)
+    return _t("report.taunt.calm", lang=lang)
 
 
 def format_gc_log(
@@ -69,98 +72,106 @@ def format_gc_log(
     cause: str | None = None,
     pause: timedelta | None = None,
     heap_max: int | None = None,
+    lang: str | None = None,
 ) -> str:
-    """把一次 GC 渲染成 JVM 统一日志风格的多行 GC 报告。
+    """Render one GC as a multi-line report in JVM unified-logging style.
 
     Args:
-        result (GCResult): 本轮 GC 结果。
-        gc_id (int): GC 序号，对应日志里的 GC(N)。
-        uptime (timedelta | None): 堆运行时长；None 显示 "—"。
-        pause_full (bool): True 渲染 Pause Full，否则 Pause Young。
-        cause (str | None): GC 原因；None 时按 pause_full 取默认
-            (Ergonomics / Allocation Failure)。
-        pause (timedelta | None): 仪式暂停时长；None 则不输出"暂停耗时"行。
-        heap_max (int | None): 堆上限(任务数)；None 则不输出"(上限 N)"。
+        result (GCResult): this round's GC result.
+        gc_id (int): GC sequence number, shown as GC(N) in the log.
+        uptime (timedelta | None): heap uptime; shows "—" if None.
+        pause_full (bool): True renders Pause Full, otherwise Pause Young.
+        cause (str | None): the GC cause; defaults based on pause_full
+            (Ergonomics / Allocation Failure) if None.
+        pause (timedelta | None): the ceremony's pause duration; the "pause time" line is
+            omitted if None.
+        heap_max (int | None): heap cap (task count); the "(cap N)" suffix is omitted if
+            None.
+        lang (str | None): output language; None uses the current global/default.
 
     Returns:
-        str: 多行 GC 日志文本。
+        str: multi-line GC log text.
     """
     total = len(result.survivors) + len(result.candidates)
     after = len(result.survivors)
     reclaim = len(result.candidates)
     kind = "Full" if pause_full else "Young"
     cause = cause or ("Ergonomics" if pause_full else "Allocation Failure")
-    cap = f" (上限 {heap_max})" if heap_max is not None else ""
+    cap = _t("report.gc_log.cap_suffix", lang=lang, heap_max=heap_max) if heap_max is not None else ""
 
     lines = [
-        f"[运行 {_fmt_uptime(uptime)}][info][gc] GC({gc_id}) Pause {kind} ({cause})",
-        f"  活跃堆         : {total} -> {after} tasks{cap}",
-        f"  本轮回收       : {reclaim} zombies   →  释放认知内存 {result.released_pct}%",
+        _t("report.gc_log.header", lang=lang, uptime=_fmt_uptime(uptime), gc_id=gc_id, kind=kind, cause=cause),
+        _t("report.gc_log.active_heap", lang=lang, total=total, after=after, cap=cap),
+        _t("report.gc_log.reclaimed", lang=lang, reclaim=reclaim, pct=result.released_pct),
     ]
     if result.cycles:
         titles = {c.task.id: c.task.title for c in result.candidates}
         first = result.cycles[0]
         names = " ⇄ ".join(f"「{titles.get(t, '#' + str(t))}」" for t in first.task_ids)
-        lines.append(f"  reference cycle: {len(result.cycles)} 处  {names}")
+        lines.append(_t("report.gc_log.cycles", lang=lang, count=len(result.cycles), names=names))
     if pause is not None:
-        lines.append(f"  暂停耗时       : {_fmt_duration(pause)}   (你在仪式上逐个纠结的真实时长)")
+        lines.append(_t("report.gc_log.pause", lang=lang, duration=_fmt_duration(pause)))
     anxiety = round(reclaim * 0.12, 1)
     blame = round(reclaim * 0.05, 1)
-    lines.append(f"  [Times: 焦虑={anxiety}h  自责={blame}h  实际推进=0.0h]")
+    lines.append(_t("report.gc_log.times", lang=lang, anxiety=anxiety, blame=blame))
     return "\n".join(lines)
 
 
-def format_candidates(result: GCResult, *, views_of: Callable[[int], int] | None = None) -> str:
-    """把回收候选清单按 环 / 不可达 / 陈旧 分组渲染，供仪式展示。
+def format_candidates(
+    result: GCResult, *, views_of: Callable[[int], int] | None = None, lang: str | None = None
+) -> str:
+    """Render the reclaim candidate listing grouped by cycle / unreachable / stale, for the ceremony.
 
     Args:
-        result (GCResult): 本轮 GC 结果。
-        views_of (Callable[[int], int] | None): 可选回调，按 id 取查看次数，
-            用于给 stale 项补一句"看了 N 次"的打脸；None 则不显示。
+        result (GCResult): this round's GC result.
+        views_of (Callable[[int], int] | None): optional callback that looks up view count by
+            id, used to add a "viewed N times" taunt to stale entries; omitted if None.
+        lang (str | None): output language; None uses the current global/default.
 
     Returns:
-        str: 多行候选清单文本；无候选时给一句难得的肯定。
+        str: multi-line candidate listing text; a rare affirmation if there are no candidates.
     """
     titles = {c.task.id: c.task.title for c in result.candidates}
-    lines = [f"━━ 回收候选清单 ({len(result.candidates)} 项) ━━━━━━━━━━━━━━━━"]
+    lines = [_t("report.candidates.header", lang=lang, count=len(result.candidates))]
 
     for cyc in result.cycles:
-        lines.append(f"[reference cycle #{cyc.id}] 互相担保，谁都不连 root：")
+        lines.append(_t("report.candidates.cycle_line", lang=lang, id=cyc.id))
         for t in cyc.task_ids:
             lines.append(f"   ⇄ #{t} {titles.get(t, '')}")
 
     unreachable = [c for c in result.candidates if c.reason is Reason.UNREACHABLE]
     if unreachable:
-        lines.append("[unreachable] 从任何活跃目标都不可达：")
+        lines.append(_t("report.candidates.unreachable_line", lang=lang))
         for c in unreachable:
             lines.append(f"   · #{c.task.id} {c.task.title}")
 
     stale = [c for c in result.candidates if c.reason is Reason.STALE]
     if stale:
-        lines.append("[stale] 可达但判活指标已死：")
+        lines.append(_t("report.candidates.stale_line", lang=lang))
         for c in stale:
             bits = []
             if c.metrics is not None:
-                bits.append(f"近期推进 {c.metrics.refcount_30d} 次")
+                bits.append(_t("report.candidates.recent_progress", lang=lang, count=c.metrics.refcount_30d))
                 skips = (
                     c.metrics.consecutive_skips
                     if c.metrics.consecutive_skips is not None
                     else c.metrics.skip_count
                 )
-                bits.append(f"连续推迟 {skips} 次")
+                bits.append(_t("report.candidates.consecutive_skips", lang=lang, count=skips))
             if views_of is not None and c.task.id is not None:
-                bits.append(f"看了 {views_of(c.task.id)} 次")
+                bits.append(_t("report.candidates.viewed", lang=lang, count=views_of(c.task.id)))
             suffix = f"  ({' · '.join(bits)})" if bits else ""
             lines.append(f"   · #{c.task.id} {c.task.title}{suffix}")
 
     if not result.candidates:
-        lines.append("   (无候选。这次你居然没骗自己，难得。)")
+        lines.append(_t("report.candidates.empty", lang=lang))
     return "\n".join(lines)
 
 
-# ---- 堆内存图(jmap 式一览：分代分布 + -Xmx 占用 + 僵尸标记) ----
+# ---- Heap map (jmap-style overview: generation layout + -Xmx usage + zombie markers) ----
 
-# 分代在堆图里的固定展示顺序与中/英文名(Eden → Survivor → Old → Metaspace)。
+# Fixed display order and English/Chinese names for generations in the heap map
+# (Eden → Survivor → Old → Metaspace).
 _GEN_ORDER: tuple[tuple[Generation, str, str], ...] = (
     (Generation.EDEN, "Eden", "新生代"),
     (Generation.SURVIVOR, "Survivor", "幸存区"),
@@ -170,15 +181,15 @@ _GEN_ORDER: tuple[tuple[Generation, str, str], ...] = (
 
 
 class RowKind(str, Enum):
-    """堆图里一行对象的标记类别；决定前缀符号与配色，文本堆图与 Web 端共用。"""
+    """Marker category for a heap-map row; drives its prefix symbol and color, shared by the text heap map and the Web UI."""
 
-    ROOT = "root"      # 活跃目标(GC root)，标 ★
-    META = "meta"      # 常驻 Metaspace 的元任务，标 ⊛
-    ZOMBIE = "zombie"  # 回收候选(僵尸)，标 ☠、标红
-    NORMAL = "normal"  # 普通存活对象，无标记
+    ROOT = "root"      # active target (GC root), marked ★
+    META = "meta"      # meta-task that permanently lives in Metaspace, marked ⊛
+    ZOMBIE = "zombie"  # reclaim candidate (zombie), marked ☠, highlighted red
+    NORMAL = "normal"  # ordinary live object, unmarked
 
 
-# RowKind → 文本堆图里的前缀符号。
+# RowKind -> prefix symbol in the text heap map.
 _ROW_MARKER: dict[RowKind, str] = {
     RowKind.ROOT: "★",
     RowKind.META: "⊛",
@@ -189,12 +200,13 @@ _ROW_MARKER: dict[RowKind, str] = {
 
 @dataclass
 class HeapRow:
-    """堆图里的一行：一个堆对象 + 它的标记类别 + (若是候选)对应的回收候选。
+    """One row in the heap map: a heap object + its marker category + (if a candidate) the matching reclaim candidate.
 
     Attributes:
-        task (Task): 该行对应的堆对象。
-        kind (RowKind): 标记类别(root / meta / zombie / normal)。
-        candidate (Candidate | None): 若该对象是回收候选则为对应 Candidate，否则 None。
+        task (Task): the heap object this row represents.
+        kind (RowKind): its marker category (root / meta / zombie / normal).
+        candidate (Candidate | None): the matching Candidate if this object is a reclaim
+            candidate, otherwise None.
     """
 
     task: Task
@@ -204,13 +216,13 @@ class HeapRow:
 
 @dataclass
 class HeapSection:
-    """堆图里的一个分代分区：分代 + 中英文名 + 该代下的对象行(按 id 升序)。
+    """One generation section in the heap map: generation + English/Chinese name + its object rows (ascending by id).
 
     Attributes:
-        gen (Generation): 分代。
-        name_en (str): 英文代名(如 "Eden")。
-        name_cn (str): 中文代名(如 "新生代")。
-        rows (list[HeapRow]): 该代下的对象行，已按 id 升序排列。
+        gen (Generation): the generation.
+        name_en (str): the English generation name (e.g. "Eden").
+        name_cn (str): the Chinese generation name (e.g. "新生代").
+        rows (list[HeapRow]): this generation's object rows, already sorted ascending by id.
     """
 
     gen: Generation
@@ -220,17 +232,18 @@ class HeapSection:
 
 
 def _row_kind(task: Task, roots: set[int], is_candidate: bool) -> RowKind:
-    """按优先级判定一行的标记类别：root(★) > 元任务(⊛) > 僵尸(☠) > 普通(空格)。
+    """Determine a row's marker category by priority: root(★) > meta-task(⊛) > zombie(☠) > normal(blank).
 
-    root 与元任务恒为存活、绝不会出现在候选里，故三者互斥、优先级安全。
+    A root and a meta-task are always live and never appear as candidates, so the three
+    categories are mutually exclusive and this priority order is safe.
 
     Args:
-        task (Task): 待判定的任务。
-        roots (set[int]): 活跃 root 的 id 集合。
-        is_candidate (bool): 该任务是否为本轮回收候选。
+        task (Task): the task being classified.
+        roots (set[int]): ids of the active roots.
+        is_candidate (bool): whether this task is a reclaim candidate this round.
 
     Returns:
-        RowKind: 对应的标记类别。
+        RowKind: the matching marker category.
     """
     if task.id in roots:
         return RowKind.ROOT
@@ -242,18 +255,20 @@ def _row_kind(task: Task, roots: set[int], is_candidate: bool) -> RowKind:
 
 
 def heap_view(result: GCResult, roots: set[int]) -> list[HeapSection]:
-    """把一次 GC 结果整理成分代分区的结构化堆视图(文本堆图与 Web 端共用的单一数据源)。
+    """Organize one GC result into a structured, per-generation heap view (the single source shared by the text heap map and the Web UI).
 
-    survivors + candidates 即堆上全部对象；按 _GEN_ORDER 分代归组、每代内按 id 升序，
-    并为每行判定标记类别与(若是候选的)Candidate。已回收对象在垃圾桶、不在堆上，不出现。
+    survivors + candidates are the heap's entire object set; grouped by generation via
+    _GEN_ORDER, sorted ascending by id within each generation, with each row's marker
+    category and (if a candidate) its Candidate resolved. Already-collected objects are in
+    the trash, not on the heap, and never appear here.
 
     Args:
-        result (GCResult): 一次 GC 的结果。
-        roots (set[int]): 活跃 root 的 id 集合(用于判定 ★)。
+        result (GCResult): one GC's result.
+        roots (set[int]): ids of the active roots (used to mark ★).
 
     Returns:
-        list[HeapSection]: 按 Eden → Survivor → Old → Metaspace 排序的分区列表；
-            每个分区含该代下按 id 升序的 HeapRow。
+        list[HeapSection]: sections ordered Eden → Survivor → Old → Metaspace; each section
+            holds that generation's HeapRows, sorted ascending by id.
     """
     cand_of = {c.task.id: c for c in result.candidates}
     tasks = list(result.survivors) + [c.task for c in result.candidates]
@@ -273,26 +288,29 @@ def heap_view(result: GCResult, roots: set[int]) -> list[HeapSection]:
 
 
 def heap_used_count(result: GCResult) -> int:
-    """统计计入 -Xmx 的堆对象数(排除 Metaspace 元任务，与 store.heap_size 同口径)。
+    """Count heap objects counted toward -Xmx (excludes Metaspace meta-tasks, same accounting as store.heap_size).
 
     Args:
-        result (GCResult): 一次 GC 的结果；survivors + candidates 即堆上全部对象。
+        result (GCResult): one GC's result; survivors + candidates are the heap's entire
+            object set.
 
     Returns:
-        int: 非 Metaspace 的堆对象总数。
+        int: total non-Metaspace heap objects.
     """
     tasks = list(result.survivors) + [c.task for c in result.candidates]
     return sum(1 for t in tasks if t.gen is not Generation.META)
 
 
-def candidate_note(cand: Candidate) -> str:
-    """把一个回收候选的判死原因浓缩成一句短注解(文本堆图加括号、Web 端做徽章，共用此源)。
+def candidate_note(cand: Candidate, *, lang: str | None = None) -> str:
+    """Condense a reclaim candidate's cause of death into a short annotation (shared source for the text heap map's parenthetical and the Web UI's badge).
 
     Args:
-        cand (Candidate): 回收候选。
+        cand (Candidate): the reclaim candidate.
+        lang (str | None): output language; None uses the current global/default.
 
     Returns:
-        str: 形如 "cycle #0" / "unreachable" / "stale · 推进3 推迟2" / "stale" 的短文本。
+        str: a short string like "cycle #0" / "unreachable" / "stale · progressed 3 skipped 2" /
+            "stale".
     """
     if cand.reason is Reason.CYCLE:
         return f"cycle #{cand.cycle_id}"
@@ -304,21 +322,24 @@ def candidate_note(cand: Candidate) -> str:
             if cand.metrics.consecutive_skips is not None
             else cand.metrics.skip_count
         )
-        return f"stale · 推进{cand.metrics.refcount_30d} 推迟{skips}"
+        return _t(
+            "report.candidate_note.stale_detail", lang=lang, progress=cand.metrics.refcount_30d, skips=skips
+        )
     return "stale"
 
 
 def _fill_bar(used: int, cap: int, *, width: int = 20) -> str:
-    """把堆占用画成定宽的 [██░░] 填充条。
+    """Draw heap usage as a fixed-width [██░░] fill bar.
 
     Args:
-        used (int): 已占用的对象数。
-        cap (int): 堆容量上限(-Xmx)；<= 0 视为无上限，画成全空条。
-        width (int): 填充条的总格子数。
+        used (int): number of objects in use.
+        cap (int): heap capacity (-Xmx); <= 0 is treated as unlimited and drawn as an
+            all-empty bar.
+        width (int): total number of cells in the bar.
 
     Returns:
-        str: 形如 "[██████░░░░░░░░░░░░░░]" 的定宽字符串(含首尾方括号)；
-            used 超配(> cap)时填满，不越界。
+        str: a fixed-width string like "[██████░░░░░░░░░░░░░░]" (brackets included); fills
+            completely without overflowing when used exceeds cap.
     """
     if cap <= 0:
         return "[" + "░" * width + "]"
@@ -326,57 +347,71 @@ def _fill_bar(used: int, cap: int, *, width: int = 20) -> str:
     return "[" + "█" * filled + "░" * (width - filled) + "]"
 
 
-def _heap_row_text(row: HeapRow) -> str:
-    """把一个 HeapRow 渲染成文本堆图里的一行：前缀标记 + #id 标题 + 判死注解。
+def _heap_row_text(row: HeapRow, *, lang: str | None = None) -> str:
+    """Render a HeapRow as one line of the text heap map: prefix marker + #id title + cause-of-death annotation.
 
-    标记与候选信息已在 heap_view 里判定，这里只负责文本呈现。
+    The marker and candidate info were already resolved in heap_view; this just handles the
+    text presentation.
 
     Args:
-        row (HeapRow): 待渲染的堆图行。
+        row (HeapRow): the heap-map row to render.
+        lang (str | None): output language; None uses the current global/default.
 
     Returns:
-        str: 形如 "  │   ☠ #3 学 Rust  (cycle #0)" 的单行文本(含左侧竖线导轨)。
+        str: a single line like "  │   ☠ #3 Learn Rust  (cycle #0)" (with the left-hand
+            vertical rail).
     """
     marker = _ROW_MARKER[row.kind]
-    annot = f"  ({candidate_note(row.candidate)})" if row.candidate is not None else ""
+    annot = f"  ({candidate_note(row.candidate, lang=lang)})" if row.candidate is not None else ""
     return f"  │   {marker} #{row.task.id} {row.task.title}{annot}"
 
 
-def format_heap_map(result: GCResult, roots: set[int], *, heap_max: int | None = None) -> str:
-    """把当前活跃堆渲染成 JVM 风格的分代堆内存图(僵尸对象以 ☠ 标出)。
+def format_heap_map(
+    result: GCResult, roots: set[int], *, heap_max: int | None = None, lang: str | None = None
+) -> str:
+    """Render the current active heap as a JVM-style generational heap map (zombies marked with ☠).
 
-    逐代(Eden / Survivor / Old / Metaspace)列出堆上对象，顶部给出 -Xmx 占用填充条，
-    并为每个回收候选标注判死原因。已回收(COLLECTED)的对象在垃圾桶而非堆上，不出现在
-    此图；Metaspace(元任务)不计入 -Xmx 占用，与 store.heap_size 同口径。
+    Lists heap objects generation by generation (Eden / Survivor / Old / Metaspace), with a
+    -Xmx usage fill bar at the top, and annotates each reclaim candidate with its cause of
+    death. Already-collected objects are in the trash, not on the heap, and never appear in
+    this map; Metaspace (meta-tasks) doesn't count toward -Xmx usage, same accounting as
+    store.heap_size.
 
     Args:
-        result (GCResult): 一次 GC 的结果；survivors + candidates 即堆上全部对象。
-        roots (set[int]): 活跃 root 的 id 集合(标 ★)。
-        heap_max (int | None): 堆容量上限(-Xmx)；给出则画占用填充条，None 则只报对象数。
+        result (GCResult): one GC's result; survivors + candidates are the heap's entire
+            object set.
+        roots (set[int]): ids of the active roots (marked ★).
+        heap_max (int | None): heap capacity (-Xmx); draws the usage fill bar if given,
+            otherwise just reports the object count.
+        lang (str | None): output language; None uses the current global/default.
 
     Returns:
-        str: 多行堆内存图文本。
+        str: multi-line heap map text.
     """
     used = heap_used_count(result)
     if heap_max is not None:
         pct = round(100 * used / heap_max, 1) if heap_max > 0 else 0.0
-        usage = (
-            f"  -Xmx 占用: {used} / {heap_max} obj  "
-            f"{_fill_bar(used, heap_max)} {pct}%   (Metaspace 不计)"
+        usage = _t(
+            "report.heap_map.usage_with_max",
+            lang=lang,
+            used=used,
+            max=heap_max,
+            bar=_fill_bar(used, heap_max),
+            pct=pct,
         )
     else:
-        usage = f"  堆对象: {used} 个(未设 -Xmx)   (Metaspace 不计)"
+        usage = _t("report.heap_map.usage_no_max", lang=lang, used=used)
 
-    lines = ["━━ 堆内存快照 · jmap -heap ━━━━━━━━━━━━━━━━", usage, ""]
+    lines = [_t("report.heap_map.title", lang=lang), usage, ""]
     for i, section in enumerate(heap_view(result, roots)):
         conn = "┌" if i == 0 else "├"
         lines.append(f"  {conn} {section.name_en} · {section.name_cn} ({len(section.rows)})")
         if section.rows:
-            lines.extend(_heap_row_text(r) for r in section.rows)
+            lines.extend(_heap_row_text(r, lang=lang) for r in section.rows)
         else:
-            lines.append("  │   (空)")
+            lines.append(_t("report.heap_map.empty_row", lang=lang))
     lines.append("  └" + "─" * 14)
-    lines.append("  图例: ★ root · ☠ 回收候选(僵尸) · ⊛ 元任务")
+    lines.append(_t("report.heap_map.legend", lang=lang))
     return "\n".join(lines)
 
 
@@ -390,16 +425,20 @@ def format_report(
     cause: str | None = None,
     pause: timedelta | None = None,
     heap_max: int | None = None,
+    lang: str | None = None,
 ) -> str:
-    """把 GC 日志与候选清单拼成一份完整回收报告。
+    """Combine the GC log and the candidate listing into one full reclaim report.
 
     Args:
-        result (GCResult): 本轮 GC 结果。
-        views_of (Callable[[int], int] | None): 透传给 format_candidates 的查看次数回调。
-        其余参数：透传给 format_gc_log。
+        result (GCResult): this round's GC result.
+        views_of (Callable[[int], int] | None): passed through to format_candidates as the
+            view-count callback.
+        lang (str | None): output language; passed through to both format_gc_log and
+            format_candidates.
+        Remaining parameters: passed through to format_gc_log.
 
     Returns:
-        str: GC 日志 + 空行 + 候选清单。
+        str: GC log + blank line + candidate listing.
     """
     log = format_gc_log(
         result,
@@ -409,12 +448,13 @@ def format_report(
         cause=cause,
         pause=pause,
         heap_max=heap_max,
+        lang=lang,
     )
-    return log + "\n\n" + format_candidates(result, views_of=views_of)
+    return log + "\n\n" + format_candidates(result, views_of=views_of, lang=lang)
 
 
-def format_doctor(store: Store, result: GCResult, *, now: datetime | None = None) -> str:
-    """生成认知内存泄漏诊断；只读，不产生 VIEW 事件。"""
+def format_doctor(store: Store, result: GCResult, *, now: datetime | None = None, lang: str | None = None) -> str:
+    """Generate the cognitive-memory-leak diagnosis; read-only, produces no VIEW events."""
     now = now or datetime.now(timezone.utc)
     candidates = {c.task.id: c for c in result.candidates}
     roots = store.root_ids()
@@ -431,41 +471,41 @@ def format_doctor(store: Store, result: GCResult, *, now: datetime | None = None
         advice: list[str] = []
         score = 0
         if views >= 10 and progress == 0:
-            issues.append(f"查看 {views} 次但从未推进")
-            advice.append("把标题改成一个 30 分钟内可执行的动作")
+            issues.append(_t("report.doctor.viewed_no_progress", lang=lang, views=views))
+            advice.append(_t("report.doctor.advice.rename_actionable", lang=lang))
             score += min(40, views)
         if skips >= 3:
-            issues.append(f"连续推迟 {skips} 次")
-            advice.append("立即推进一次，或承认它应被回收")
+            issues.append(_t("report.doctor.consecutive_skips", lang=lang, skips=skips))
+            advice.append(_t("report.doctor.advice.progress_or_admit", lang=lang))
             score += skips * 8
         if task.gen is Generation.OLD and progress == 0:
-            issues.append(f"Old Generation age={task.age} 且零推进")
-            advice.append("降级为 weak reference")
+            issues.append(_t("report.doctor.old_zero_progress", lang=lang, age=task.age))
+            advice.append(_t("report.doctor.advice.downgrade_weak", lang=lang))
             score += 35
         if churn >= 3:
-            issues.append(f"发生 {churn} 次回收/复活/恢复，疑似 GC thrashing")
-            advice.append("重新关联明确的 Root，或永久回收")
+            issues.append(_t("report.doctor.churn", lang=lang, churn=churn))
+            advice.append(_t("report.doctor.advice.relink_or_collect", lang=lang))
             score += churn * 6
         cand = candidates.get(task.id)
         if cand is not None and cand.reason is Reason.CYCLE:
-            issues.append(f"位于不可达引用环 #{cand.cycle_id}")
-            advice.append("拆除循环理由依赖")
+            issues.append(_t("report.doctor.in_cycle", lang=lang, cycle_id=cand.cycle_id))
+            advice.append(_t("report.doctor.advice.break_cycle", lang=lang))
             score += 50
         elif cand is not None and cand.reason is Reason.UNREACHABLE:
-            issues.append("从所有活跃 Root 不可达")
-            advice.append("关联到真实目标，或立即回收")
+            issues.append(_t("report.doctor.unreachable_from_roots", lang=lang))
+            advice.append(_t("report.doctor.advice.link_or_collect", lang=lang))
             score += 25
         elif cand is not None and cand.reason is Reason.STALE:
-            issues.append("可达，但当前 GC 策略已判定为陈旧对象")
-            advice.append("记录真实推进、调整引用强度，或回收")
+            issues.append(_t("report.doctor.stale_by_policy", lang=lang))
+            advice.append(_t("report.doctor.advice.log_progress_or_adjust", lang=lang))
             score += 20
         if issues:
             if task.id in roots:
-                issues.append("该对象本身是 GC Root")
+                issues.append(_t("report.doctor.is_root", lang=lang))
             findings.append((score, task, issues, list(dict.fromkeys(advice))))
 
     if not findings:
-        return "[OK] 未发现明显的认知内存泄漏。"
+        return _t("report.doctor.ok", lang=lang)
 
     lines = [f"[WARN] Suspected cognitive memory leaks: {len(findings)}"]
     for score, task, issues, advice in sorted(findings, key=lambda x: (-x[0], x[1].id or 0)):
@@ -482,10 +522,10 @@ def format_doctor(store: Store, result: GCResult, *, now: datetime | None = None
     return "\n".join(lines)
 
 
-def format_stats(runs: list[GCRun]) -> str:
-    """汇总 GC 审计历史。"""
+def format_stats(runs: list[GCRun], *, lang: str | None = None) -> str:
+    """Summarize the GC audit history."""
     if not runs:
-        return "暂无 GC 历史。执行一次非 dry-run 的 `todogc gc` 后再来。"
+        return _t("report.stats.empty", lang=lang)
     total_candidates = sum(r.candidates for r in runs)
     total_collected = sum(r.collected for r in runs)
     total_revived = sum(r.revived for r in runs)
@@ -498,7 +538,7 @@ def format_stats(runs: list[GCRun]) -> str:
     mode_text = ", ".join(f"{k}={v}" for k, v in sorted(modes.items()))
     return "\n".join(
         [
-            "━━ GC 历史统计 ━━━━━━━━━━━━━━━━━━━",
+            _t("report.stats.title", lang=lang),
             f"  runs              : {len(runs)} ({mode_text})",
             f"  average heap       : {avg_heap:.1f} obj",
             f"  candidates         : {total_candidates}",

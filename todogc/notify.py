@@ -1,5 +1,7 @@
-# notify.py —— 通知渠道：目前只接 ntfy(纯 HTTP JSON POST，零依赖)。watcher 检测到状态跃迁时调用 send()，
-# 失败与否由调用方决定要不要吞掉(推送是锦上添花，不该拖垮 GC 判活本身)。
+# notify.py — notification channel: currently only wires up ntfy (plain HTTP JSON POST, zero
+# dependencies). watcher calls send() when it detects a state transition; whether a failure
+# gets swallowed is the caller's call (a push is a nice-to-have, it shouldn't be able to take
+# down the GC health check itself).
 
 from __future__ import annotations
 
@@ -11,15 +13,16 @@ from todogc.i18n import DEFAULT_LOCALE, t
 
 
 class NotifyError(RuntimeError):
-    """推送失败(网络错误 / 服务端返回非成功状态码)。"""
+    """Raised when a push fails (network error, or the server returned a non-success status code)."""
 
 
 class NtfyChannel:
-    """一个 ntfy 推送目标。
+    """A single ntfy push target.
 
-    用 JSON 发布方式(topic 放 body 里，POST 到 server 根路径)而非"topic 拼在 URL、
-    标题塞 HTTP header"的简单方式——后者对中文标题/正文要求 RFC 2047 编码，前者原生 UTF-8，
-    省掉这层麻烦。
+    Publishes via JSON (topic goes in the body, POST to the server's root path) rather than
+    the simpler "topic in the URL, title stuffed into an HTTP header" approach — the latter
+    requires RFC 2047 encoding for non-ASCII titles/bodies, while JSON is native UTF-8 and
+    sidesteps that entirely.
     """
 
     def __init__(
@@ -30,19 +33,22 @@ class NtfyChannel:
         token: str | None = None,
         lang: str = DEFAULT_LOCALE,
     ) -> None:
-        """构造一个 ntfy 推送目标。
+        """Construct an ntfy push target.
 
         Args:
-            topic (str): ntfy topic 名称(不可为空)。
-            server (str): ntfy 服务端地址；默认公共实例 https://ntfy.sh，可填自建实例。
-            token (str | None): 受保护 topic 需要的 Bearer token；公共实例通常留空。
-            lang (str): 本渠道自身报错文案(ValueError/NotifyError)使用的语言，默认英文。
+            topic (str): ntfy topic name (must not be empty).
+            server (str): ntfy server URL; defaults to the public instance https://ntfy.sh,
+                but a self-hosted instance works too.
+            token (str | None): Bearer token needed for a protected topic; usually left unset
+                on the public instance.
+            lang (str): language used for this channel's own error messages
+                (ValueError/NotifyError); defaults to English.
 
         Returns:
             None
 
         Raises:
-            ValueError: topic 为空时。
+            ValueError: if topic is empty.
         """
         if not topic:
             raise ValueError(t("notify.error.empty_topic", lang=lang))
@@ -59,20 +65,22 @@ class NtfyChannel:
         priority: int = 3,
         tags: list[str] | None = None,
     ) -> None:
-        """推送一条消息。
+        """Send a push notification.
 
         Args:
-            title (str): 通知标题。
-            message (str): 通知正文。
-            priority (int): ntfy 优先级，1(min)~5(max)，默认 3(default)。
-            tags (list[str] | None): ntfy 内置 emoji 短代码(如 "skull"/"recycle")，用于通知图标。
+            title (str): notification title.
+            message (str): notification body.
+            priority (int): ntfy priority, 1 (min) to 5 (max); defaults to 3 (default).
+            tags (list[str] | None): ntfy's built-in emoji short codes (e.g.
+                "skull"/"recycle"), used as the notification icon.
 
         Returns:
             None
 
         Raises:
-            ValueError: priority 不在 1~5 之间。
-            NotifyError: 网络错误，或服务端返回非成功状态码。
+            ValueError: if priority is outside 1-5.
+            NotifyError: on a network error, or if the server returned a non-success status
+                code.
         """
         if not 1 <= priority <= 5:
             raise ValueError(t("notify.error.invalid_priority", lang=self._lang))

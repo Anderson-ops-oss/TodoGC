@@ -104,13 +104,14 @@ def _gc(store: Store, now: datetime, policy: GCPolicy | None = None) -> GCResult
     return Collector(policy).run_on_store(store, store.root_ids(), extra_edges=store.deps(), now=now)
 
 
-def _row_markup(row: HeapRow) -> str:
+def _row_markup(row: HeapRow, *, lang: str | None = None) -> str:
     """把一个 HeapRow 渲染成一行带色 HTML(僵尸红 + 灰色判死注解，root 金、meta 品红)。
 
     标题经 html.escape 转义，任意内容都不会破坏标记。
 
     Args:
         row (HeapRow): 堆图行(kind 与候选信息已由 report.heap_view 判定)。
+        lang (str | None): 本次 rerun 的 UI 显示语言；None 用当前全局默认。
 
     Returns:
         str: 一行 HTML 文本。
@@ -119,7 +120,7 @@ def _row_markup(row: HeapRow) -> str:
     title = html.escape(row.task.title)
     color = _ROW_COLOR.get(row.kind)
     if row.kind is RowKind.ZOMBIE:
-        note = html.escape(report.candidate_note(row.candidate)) if row.candidate is not None else ""
+        note = html.escape(report.candidate_note(row.candidate, lang=lang)) if row.candidate is not None else ""
         return (
             f'<span style="color:{color}">☠ #{tid} {title}</span> '
             f'<span style="color:#888">({note})</span>'
@@ -171,7 +172,7 @@ def _render_heap(result: GCResult, roots: set[int], heap_max: int, *, lang: str)
         with cols[i % 2].container(border=True):
             st.markdown(f"**{sec.name_en}** · {sec.name_cn}　({len(sec.rows)})")
             if sec.rows:
-                st.markdown("<br>".join(_row_markup(r) for r in sec.rows), unsafe_allow_html=True)
+                st.markdown("<br>".join(_row_markup(r, lang=lang) for r in sec.rows), unsafe_allow_html=True)
             else:
                 st.markdown(_t("webapp.heap.empty_section", lang=lang))
     st.caption(_t("webapp.heap.legend", lang=lang))
@@ -194,11 +195,11 @@ def _render_report(
         None
     """
     st.code(
-        report.format_gc_log(result, uptime=uptime, pause_full=full, heap_max=heap_max),
+        report.format_gc_log(result, uptime=uptime, pause_full=full, heap_max=heap_max, lang=lang),
         language=None,
     )
     with st.expander(_t("webapp.report.candidates_expander", lang=lang, count=len(result.candidates))):
-        st.code(report.format_candidates(result, views_of=store.view_count), language=None)
+        st.code(report.format_candidates(result, views_of=store.view_count, lang=lang), language=None)
 
 
 def _render_ceremony(
@@ -231,7 +232,7 @@ def _render_ceremony(
         c0, c1, c2 = st.columns([4, 3, 4])
         c0.markdown(
             f"**#{tid}** {html.escape(cand.task.title)}  \n"
-            f":gray[{cand.reason.value} · {report.generation_taunt(cand.task.gen, cand.task.age)}]"
+            f":gray[{cand.reason.value} · {report.generation_taunt(cand.task.gen, cand.task.age, lang=lang)}]"
         )
         choices[tid] = c1.radio(
             _t("webapp.ceremony.decide_label", lang=lang),
@@ -521,10 +522,10 @@ def main() -> None:
         _render_task_manager(store, now, lang=lang)
 
         st.subheader("Leak Inspector · doctor")
-        st.code(report.format_doctor(store, result, now=now), language=None)
+        st.code(report.format_doctor(store, result, now=now, lang=lang), language=None)
 
         st.subheader(_t("webapp.main.stats_subheader", lang=lang))
-        st.code(report.format_stats(store.gc_runs()), language=None)
+        st.code(report.format_stats(store.gc_runs(), lang=lang), language=None)
 
         st.subheader(_t("webapp.main.graveyard_subheader", lang=lang))
         _render_graveyard(store, now, lang=lang)

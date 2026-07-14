@@ -164,7 +164,7 @@ def test_new_cli_commands_and_gc_stats(tmp_path, capsys):
     with Store(db) as store:
         assert len(store.gc_runs()) == 1
     assert main(["--db", db, "stats", "--since", "30d"]) == 0
-    assert "GC 历史统计" in capsys.readouterr().out
+    assert "GC History Stats" in capsys.readouterr().out
 
 
 def test_doctor_finds_view_only_leak(store, now):
@@ -174,7 +174,7 @@ def test_doctor_finds_view_only_leak(store, now):
     result = Collector().run_on_store(store, store.root_ids(), now=now)
     text = report.format_doctor(store, result, now=now)
     assert "cognitive memory leaks" in text
-    assert "查看 10 次但从未推进" in text
+    assert "viewed 10 times but never progressed" in text
 
 
 def test_interactive_gc_audit_records_actual_action(tmp_path, monkeypatch):

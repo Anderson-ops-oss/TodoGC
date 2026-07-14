@@ -1,6 +1,7 @@
-"""TodoGC 配置：零依赖读取项目级 ``todogc.toml``，并合并环境变量。
-Python 3.11+ 使用标准库 tomllib；Python 3.10 使用一个只覆盖本项目键值的严格后备解析器，
-从而保持核心零依赖。
+"""TodoGC configuration: reads the project-level ``todogc.toml`` with zero dependencies, and
+merges in environment variable overrides. Python 3.11+ uses the standard library's tomllib;
+Python 3.10 uses a strict fallback parser that only covers this project's own keys, keeping
+the core dependency-free either way.
 """
 
 from __future__ import annotations
@@ -14,18 +15,18 @@ from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES
 from todogc.i18n import t as _t
 
 try:  # Python 3.11+
-    import tomllib  # pyright: ignore[reportMissingImports] - pyrightconfig.json 钉死 3.10，3.10 下本就没有
-except ImportError:  # pragma: no cover - 当前 CI 的 3.10 job 覆盖
+    import tomllib  # pyright: ignore[reportMissingImports] - pyrightconfig.json pins 3.10, which doesn't have this module anyway
+except ImportError:  # pragma: no cover - covered by the 3.10 job in CI
     tomllib = None
 
 
 class ConfigError(ValueError):
-    """配置文件或环境变量无效。"""
+    """Raised when the config file or an environment variable is invalid."""
 
 
 @dataclass(frozen=True)
 class AppConfig:
-    """CLI 与 Web 共用的运行配置。"""
+    """Runtime configuration shared by the CLI and the Web UI."""
 
     heap_max: int = 50
     gc_mode: str = "normal"
@@ -33,26 +34,29 @@ class AppConfig:
     max_consecutive_skips: int = 5
     restore_grace_days: int = 7
 
-    # [i18n]：CLI 启动时的默认语言、Watcher 推送用的语言。Web 端有自己的 per-session
-    # 语言(见 webapp.py 的 session_state)，不读这个字段，这里只是它的初始值来源。
+    # [i18n]: default language at CLI startup, and the language the Watcher pushes in. The
+    # Web UI has its own per-session language (see webapp.py's session_state) and doesn't
+    # read this field directly — this is only where that per-session default comes from.
     lang: str = DEFAULT_LOCALE
 
-    # [notify]：定时体检(todogc watch)的 ntfy 推送目标；ntfy_enabled 为 False 时 watch 只算不推。
+    # [notify]: the ntfy push target for the scheduled checkup (todogc watch); when
+    # ntfy_enabled is False, watch still computes but never pushes.
     ntfy_enabled: bool = False
     ntfy_server: str = "https://ntfy.sh"
     ntfy_topic: str = ""
     ntfy_token: str | None = None
 
-    # [watch]：定时体检的节奏(秒/天为单位，对应设计里的"事件驱动 + 心跳兜底 + 去抖")。
-    watch_poll_seconds: int = 1800  # 30 分钟轮训
-    watch_digest_seconds: int = 86400 # 1 天汇总
-    watch_remind_days: int = 7 
+    # [watch]: cadence of the scheduled checkup (seconds/days), matching the design's
+    # "event-driven + heartbeat fallback + debounce" model.
+    watch_poll_seconds: int = 1800  # poll every 30 minutes
+    watch_digest_seconds: int = 86400  # digest every 1 day
+    watch_remind_days: int = 7
     watch_heap_threshold_pct: int = 80
     watch_lock_stale_seconds: int = 300
 
 
 def _scalar(raw: str) -> object:
-    """解析后备 TOML 所需的字符串、整数和布尔标量。"""
+    """Parse the string/int/bool scalar types the fallback TOML parser needs."""
     raw = raw.strip()
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {'"', "'"}:
         return raw[1:-1]
@@ -65,7 +69,7 @@ def _scalar(raw: str) -> object:
 
 
 def _fallback_toml(text: str) -> dict[str, dict[str, object]]:
-    """解析本项目使用的简单 ``[section] key=value`` TOML 子集。"""
+    """Parse the simple ``[section] key=value`` TOML subset this project actually uses."""
     out: dict[str, dict[str, object]] = {}
     section: str | None = None
     for lineno, original in enumerate(text.splitlines(), 1):
@@ -89,7 +93,7 @@ def _fallback_toml(text: str) -> dict[str, dict[str, object]]:
 
 
 def _positive(value: Any, name: str) -> int:
-    """把配置值校验为正整数；bool 不作为 int 接受。"""
+    """Validate a config value as a positive integer; bool is not accepted as int."""
     if isinstance(value, bool):
         raise ConfigError(_t("config.error.must_be_positive_int", name=name))
     try:
@@ -102,7 +106,7 @@ def _positive(value: Any, name: str) -> int:
 
 
 def _flag(value: Any, name: str) -> bool:
-    """把配置值统一解析为 bool——真实 TOML 给的是原生 bool，环境变量给的是字符串。"""
+    """Normalize a config value to bool — real TOML gives a native bool, an env var gives a string."""
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -115,7 +119,7 @@ def _flag(value: Any, name: str) -> bool:
 
 
 def _percent(value: Any, name: str) -> int:
-    """把配置值校验为 1~100 的百分比整数。"""
+    """Validate a config value as a percentage integer between 1 and 100."""
     number = _positive(value, name)
     if number > 100:
         raise ConfigError(_t("config.error.must_be_percent", name=name))
@@ -123,9 +127,10 @@ def _percent(value: Any, name: str) -> int:
 
 
 def load_config(path: str | Path | None = None, *, environ: dict[str, str] | None = None) -> AppConfig:
-    """读取配置文件并应用环境变量覆盖。
+    """Read the config file and apply environment variable overrides.
 
-    优先级：环境变量 > 指定/当前目录配置文件 > 默认值。CLI 参数在 ``cli.main`` 再覆盖。
+    Precedence: environment variables > the specified/current-directory config file >
+    defaults. CLI arguments then override this again, in ``cli.main``.
     """
     env = os.environ if environ is None else environ
     config_path = Path(path or env.get("TODOGC_CONFIG", "todogc.toml"))
