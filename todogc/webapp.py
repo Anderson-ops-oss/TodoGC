@@ -1,4 +1,6 @@
-# webapp.py —— 可选的 Streamlit Web 端：把堆内存图搬进浏览器(僵尸标红)，并支持 add/gc/restore 交互；复用内核(report.heap_view / run_ceremony)，不重判、不另起炉灶。
+# webapp.py — the optional Streamlit Web UI: brings the heap map into the browser (zombies
+# marked red) and supports add/gc/restore interactions; reuses the core (report.heap_view /
+# run_ceremony) rather than re-judging anything or building a parallel implementation.
 
 from __future__ import annotations
 
@@ -9,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from todogc import report
-from todogc.cli import HEAP_MAX, run_ceremony  # 共享的 -Xmx 默认与回收仪式纯逻辑核心
+from todogc.cli import HEAP_MAX, run_ceremony  # shared -Xmx default and the ceremony's pure-logic core
 from todogc.collector import Collector, GCPolicy, GCResult
 from todogc.config import AppConfig, load_config
 from todogc.heap import ReferenceStrength, State, TouchKind
@@ -30,25 +32,29 @@ else:
         from streamlit.runtime import exists as _st_runtime_exists
 
         _HAVE_STREAMLIT = True
-    except ImportError:  # 没装 streamlit：模块仍可被 import(供测试/CLI 探测)，只是起不了服务
+    except ImportError:  # streamlit not installed: the module can still be imported (for tests/CLI probing), it just can't serve
         st = None
         _st_runtime_exists = None
         _HAVE_STREAMLIT = False
 
 
 def _start_watcher(db_path: str, config: AppConfig) -> Watcher:
-    """启动一条后台体检 daemon 线程(真正的"只起一条"由下面 st.cache_resource 包装保证)。
+    """Start a background checkup daemon thread ("only ever one" is actually guaranteed by the st.cache_resource wrapper below).
 
-    Streamlit 每次 rerun 都会重新跑到这一行，若不用 st.cache_resource 包一层，
-    每次交互都会新开一条线程——这里只是线程本体，缓存单例化在模块底部按
-    _HAVE_STREAMLIT 条件包装，避免没装 streamlit 时对 st.cache_resource 的裸引用报错。
+    Streamlit re-runs this line on every rerun; without the st.cache_resource wrapper, every
+    interaction would spin up a new thread — this function is just the thread body, and the
+    singleton caching is applied at the bottom of the module, conditioned on
+    _HAVE_STREAMLIT so a bare reference to st.cache_resource doesn't error out when
+    streamlit isn't installed.
 
     Args:
-        db_path (str): 要体检的数据库路径。
-        config (AppConfig): 含 notify.*/watch.* 配置；调用方需确保 ntfy_enabled 为 True。
+        db_path (str): path to the database to check up on.
+        config (AppConfig): config containing notify.*/watch.*; the caller must ensure
+            ntfy_enabled is True.
 
     Returns:
-        Watcher: 已启动(daemon 线程在跑)的 watcher；随 streamlit 子进程一起终止，无需手动停止。
+        Watcher: the watcher, already started (its daemon thread is running); it terminates
+            along with the streamlit subprocess, no manual stop needed.
     """
     watcher = Watcher(db_path, config)
     threading.Thread(target=watcher.run, name="todogc-watch", daemon=True).start()
@@ -59,7 +65,7 @@ if _HAVE_STREAMLIT:
     _start_watcher = st.cache_resource(show_spinner=False)(_start_watcher)
 
 
-# RowKind → HTML 颜色(与 CLI 的 rich 主题对齐：root 描金、僵尸红、元任务品红)。
+# RowKind -> HTML color (aligned with the CLI's rich theme: root gold, zombie red, meta-task magenta).
 _ROW_COLOR: dict[RowKind, str] = {
     RowKind.ROOT: "#e0a800",
     RowKind.META: "#a855f7",
@@ -67,54 +73,56 @@ _ROW_COLOR: dict[RowKind, str] = {
 }
 
 
-# ============ 无依赖辅助(不碰 streamlit，可被安全 import) ============
+# ============ Dependency-free helpers (don't touch streamlit, safe to import) ============
 
 def _db_path() -> str:
-    """解析数据库路径：优先环境变量 TODOGC_DB，与 CLI 的 --db 默认同源。
+    """Resolve the database path: prefers the TODOGC_DB env var, same source as the CLI's --db default.
 
     Returns:
-        str: 数据库文件路径(默认 "todogc.db")。
+        str: the database file path (default "todogc.db").
     """
     return os.environ.get("TODOGC_DB", "todogc.db")
 
 
 def _default_heap_max() -> int:
-    """解析 -Xmx 默认值：优先环境变量 TODOGC_HEAP_MAX，否则用 CLI 的 HEAP_MAX。
+    """Resolve the -Xmx default: prefers the TODOGC_HEAP_MAX env var, otherwise the CLI's HEAP_MAX.
 
     Args:
-        无。
+        None.
 
     Returns:
-        int: 活跃堆上限默认值。
+        int: the default active heap cap.
     """
     raw = os.environ.get("TODOGC_HEAP_MAX", "")
     return int(raw) if raw.isdigit() and int(raw) > 0 else HEAP_MAX
 
 
 def _gc(store: Store, now: datetime, policy: GCPolicy | None = None) -> GCResult:
-    """跑一次标记-清除(与 CLI 同口径：root + 理由边)。
+    """Run one mark-and-sweep pass (same accounting as the CLI: root + reason edges).
 
     Args:
-        store (Store): 数据源。
-        now (datetime): 判活时间基准。
+        store (Store): the data source.
+        now (datetime): the liveness time base.
 
     Returns:
-        GCResult: 本轮 GC 结果。
+        GCResult: this round's GC result.
     """
     return Collector(policy).run_on_store(store, store.root_ids(), extra_edges=store.deps(), now=now)
 
 
 def _row_markup(row: HeapRow, *, lang: str | None = None) -> str:
-    """把一个 HeapRow 渲染成一行带色 HTML(僵尸红 + 灰色判死注解，root 金、meta 品红)。
+    """Render a HeapRow as one line of colored HTML (zombie red + gray cause-of-death annotation, root gold, meta magenta).
 
-    标题经 html.escape 转义，任意内容都不会破坏标记。
+    The title is escaped via html.escape, so no content can break the markup.
 
     Args:
-        row (HeapRow): 堆图行(kind 与候选信息已由 report.heap_view 判定)。
-        lang (str | None): 本次 rerun 的 UI 显示语言；None 用当前全局默认。
+        row (HeapRow): the heap-map row (kind and candidate info already resolved by
+            report.heap_view).
+        lang (str | None): this rerun's UI display language; None uses the current global
+            default.
 
     Returns:
-        str: 一行 HTML 文本。
+        str: one line of HTML.
     """
     tid = row.task.id
     title = html.escape(row.task.title)
@@ -133,10 +141,10 @@ def _row_markup(row: HeapRow, *, lang: str | None = None) -> str:
 
 
 def _running_under_streamlit() -> bool:
-    """当前是否处于 `streamlit run` 运行时(而非被 import 或裸执行)。
+    """Whether we're currently inside a `streamlit run` runtime (as opposed to being imported or run bare).
 
     Returns:
-        bool: 装了 streamlit 且其 runtime 已启动时为 True。
+        bool: True if streamlit is installed and its runtime has started.
     """
     if not _HAVE_STREAMLIT:
         return False
@@ -146,16 +154,16 @@ def _running_under_streamlit() -> bool:
         return False
 
 
-# ============ 渲染层(仅在 streamlit run 下调用) ============
+# ============ Rendering layer (only called under streamlit run) ============
 
 def _render_heap(result: GCResult, roots: set[int], heap_max: int, *, lang: str) -> None:
-    """渲染堆内存图：-Xmx 占用条 + 分代卡片(僵尸标红) + 图例。
+    """Render the heap map: -Xmx usage bar + per-generation cards (zombies marked red) + legend.
 
     Args:
-        result (GCResult): 本轮 GC 结果。
-        roots (set[int]): 活跃 root 的 id 集合。
-        heap_max (int): 活跃堆上限(-Xmx)。
-        lang (str): 本次 rerun 的 UI 显示语言。
+        result (GCResult): this round's GC result.
+        roots (set[int]): ids of the active roots.
+        heap_max (int): the active heap cap (-Xmx).
+        lang (str): this rerun's UI display language.
 
     Returns:
         None
@@ -181,15 +189,15 @@ def _render_heap(result: GCResult, roots: set[int], heap_max: int, *, lang: str)
 def _render_report(
     result: GCResult, store: Store, *, uptime: timedelta | None, heap_max: int, full: bool, lang: str
 ) -> None:
-    """渲染 JVM 风格 GC 日志与候选清单(纯文本，复用 report，与 CLI 同源)。
+    """Render the JVM-style GC log and candidate listing (plain text, reuses report, same source as the CLI).
 
     Args:
-        result (GCResult): 本轮 GC 结果。
-        store (Store): 数据源(取 view 次数供打脸)。
-        uptime (timedelta | None): 堆运行时长；None 显示 "—"。
-        heap_max (int): 活跃堆上限。
-        full (bool): 是否渲染为 Full GC。
-        lang (str): 本次 rerun 的 UI 显示语言。
+        result (GCResult): this round's GC result.
+        store (Store): the data source (for view counts, for the taunt).
+        uptime (timedelta | None): heap uptime; shows "—" if None.
+        heap_max (int): the active heap cap.
+        full (bool): whether to render as a Full GC.
+        lang (str): this rerun's UI display language.
 
     Returns:
         None
@@ -205,13 +213,13 @@ def _render_report(
 def _render_ceremony(
     store: Store, result: GCResult, now: datetime, *, mode: str = "normal", heap_before: int = 0, lang: str
 ) -> None:
-    """渲染 Stop-the-world 交互仪式：逐候选选复活/回收/跳过，执行时复用 run_ceremony。
+    """Render the interactive Stop-the-world ceremony: pick revive/collect/skip per candidate, executing via run_ceremony.
 
     Args:
-        store (Store): 数据源(会被写入)。
-        result (GCResult): 本轮 GC 结果。
-        now (datetime): 事件时间基准。
-        lang (str): 本次 rerun 的 UI 显示语言。
+        store (Store): the data source (will be written to).
+        result (GCResult): this round's GC result.
+        now (datetime): the event time base.
+        lang (str): this rerun's UI display language.
 
     Returns:
         None
@@ -284,13 +292,13 @@ def _render_ceremony(
 
 
 def _render_add(store: Store, heap_max: int, now: datetime, *, lang: str) -> None:
-    """渲染侧栏"分配任务"表单；活跃堆满(非 meta/force)时按 -Xmx 语义拒绝并提示先回收。
+    """Render the sidebar's "allocate task" form; rejects per -Xmx semantics and suggests reclaiming first when the active heap is full (and not meta/force).
 
     Args:
-        store (Store): 数据源(会被写入)。
-        heap_max (int): 活跃堆上限(-Xmx)。
-        now (datetime): 事件时间基准。
-        lang (str): 本次 rerun 的 UI 显示语言。
+        store (Store): the data source (will be written to).
+        heap_max (int): the active heap cap (-Xmx).
+        now (datetime): the event time base.
+        lang (str): this rerun's UI display language.
 
     Returns:
         None
@@ -330,12 +338,12 @@ def _render_add(store: Store, heap_max: int, now: datetime, *, lang: str) -> Non
 
 
 def _render_graveyard(store: Store, now: datetime, *, lang: str) -> None:
-    """渲染墓园：已回收任务的墓志铭 + 一键恢复(restore)。
+    """Render the graveyard: epitaphs for collected tasks + one-click restore.
 
     Args:
-        store (Store): 数据源(会被写入)。
-        now (datetime): restore 事件时间基准。
-        lang (str): 本次 rerun 的 UI 显示语言。
+        store (Store): the data source (will be written to).
+        now (datetime): the restore event time base.
+        lang (str): this rerun's UI display language.
 
     Returns:
         None
@@ -368,7 +376,7 @@ def _render_graveyard(store: Store, now: datetime, *, lang: str) -> None:
 
 
 def _render_task_manager(store: Store, now: datetime, *, lang: str) -> None:
-    """任务详情、编辑、推进、推迟、关联和事件时间线。"""
+    """Task details, edit, progress, snooze, linking, and the event timeline."""
     tasks = [t for t in store.list_tasks(record_view=False) if t.state is not State.COLLECTED]
     if not tasks:
         st.caption(_t("webapp.task_manager.empty", lang=lang))
@@ -442,11 +450,12 @@ def _render_task_manager(store: Store, now: datetime, *, lang: str) -> None:
 
 
 def main() -> None:
-    """Streamlit 入口：装配侧栏(add + -Xmx)与主区(堆图 / GC 日志 / 仪式 / 墓园)。
+    """Streamlit entry point: assembles the sidebar (add + -Xmx) and the main area (heap map / GC log / ceremony / graveyard).
 
-    浏览用的读取一律 record_view=False——Web 交互会频繁 rerun，不该把自动刷新算成
-    "你在查看某任务"而虚增 view 次数(与 CLI 的 heap/jmap 只读诊断同理)。写操作
-    (add/progress/gc/restore)才是有意的埋点。
+    Browsing reads always use record_view=False — Web interactions rerun frequently, and an
+    automatic refresh shouldn't be counted as "you're viewing this task" and inflate its view
+    count (same reasoning as the CLI's read-only heap/jmap diagnostics). Write operations
+    (add/progress/gc/restore) are the only ones meant to be tracked.
 
     Returns:
         None

@@ -8,17 +8,17 @@ restore_grace_days = 7
 max = 50
 
 [i18n]
-lang = "en"                # en / zh；CLI 启动语言与 Watcher 推送语言，Web 端语言在页面里单独切换
+lang = "en"                # en / zh; CLI startup language and the Watcher's push language, the Web UI's language is switched separately on the page
 
 [notify]
 ntfy_enabled = false
 ntfy_server = "https://ntfy.sh"
 ntfy_topic = ""
-# ntfy_token = ""          # 受保护 topic 才需要；建议走 TODOGC_NTFY_TOKEN 环境变量，别把密钥提交进这份文件
+# ntfy_token = ""          # only needed for a protected topic; prefer the TODOGC_NTFY_TOKEN env var, don't commit a secret into this file
 
 [watch]
-poll_seconds = 1800        # 轮询间隔(秒)：多久算一次判活，只算不一定推
-digest_seconds = 86400     # 心跳摘要间隔(秒)：没有新事件也定期报个平安
-remind_days = 7            # 候选状态没变时，隔多少天再提醒一次(别提醒一次就没下文)
-heap_threshold_pct = 80    # 堆占用告警阈值(%)，跨过这条线才告警一次(边沿触发，不是持续刷屏)
-lock_stale_seconds = 300   # 单实例锁心跳过期时间：判定上一个 watcher 已经死了、允许接管
+poll_seconds = 1800        # poll interval (seconds): how often to run a liveness check, computing doesn't always mean pushing
+digest_seconds = 86400     # heartbeat digest interval (seconds): reports in periodically even with no new events
+remind_days = 7            # when a candidate's status hasn't changed, how many days before reminding again (don't remind once and go silent)
+heap_threshold_pct = 80    # heap-usage alert threshold (%), only alerts once when crossing this line (edge-triggered, not spammed continuously)
+lock_stale_seconds = 300   # single-instance lock heartbeat expiry: how long before the previous watcher is judged dead and can be taken over

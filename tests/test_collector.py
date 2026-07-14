@@ -1,4 +1,4 @@
-# test_collector.py —— GC 引擎：分类、循环引用分组、released_pct 与 COLLECTED 隔离。
+# test_collector.py — the GC engine: classification, reference-cycle grouping, released_pct, and COLLECTED isolation.
 
 from __future__ import annotations
 
@@ -7,20 +7,20 @@ from todogc.heap import Generation, State, Task
 
 
 def _task(i: int, meta: bool = False) -> Task:
-    """构造一个带 id 的测试任务。
+    """Construct a test task with an id.
 
     Args:
-        i (int): 任务 id。
-        meta (bool): 是否为元任务。
+        i (int): the task id.
+        meta (bool): whether it's a meta-task.
 
     Returns:
-        Task: 测试用任务对象。
+        Task: a task object for testing.
     """
     return Task(title=f"t{i}", id=i, gen=(Generation.META if meta else Generation.EDEN))
 
 
 def test_classification_on_graph():
-    """root/meta 恒活；可达且活；可达但指标死=stale；不可达孤儿=unreachable；不可达环=cycle。"""
+    """root/meta are always alive; reachable and alive; reachable but dead metrics = stale; unreachable orphan = unreachable; unreachable cycle = cycle."""
     tasks = {i: _task(i, meta=(i == 9)) for i in range(12)}
     edges = {0: {1, 2, 10}, 4: {5}, 5: {4}, 6: {7}, 7: {8}, 8: {6}, 10: {11}, 11: {10}}
     alive = TaskMetrics(3, 0, 1.0)
@@ -35,18 +35,18 @@ def test_classification_on_graph():
     assert by[3].reason is Reason.UNREACHABLE
     assert by[4].reason is Reason.CYCLE and by[4].cycle_id == by[5].cycle_id
     assert sorted([sorted(c.task_ids) for c in res.cycles]) == [[4, 5], [6, 7, 8]]
-    assert 10 not in by and 11 not in by  # 挂在 root 上的合法环不误伤
+    assert 10 not in by and 11 not in by  # a legitimate cycle hanging off a root is never caught by mistake
 
 
 def test_released_pct():
-    """released_pct = 候选数 / 总数。"""
+    """released_pct = candidate count / total."""
     tasks = {0: _task(0), 1: _task(1)}
     res = Collector().collect(tasks, {0}, {}, lambda i: TaskMetrics(0, 0, None))
-    assert res.released_pct == 50.0  # #0 root 活，#1 不可达
+    assert res.released_pct == 50.0  # #0 root is alive, #1 is unreachable
 
 
 def test_run_on_store_finds_persisted_cycle(store, now):
-    """从持久化的 roots + deps 组装图并抓到环。"""
+    """Assemble the graph from persisted roots + deps and catch the cycle."""
     goal = store.add_task("G", is_root=True, ts=now)
     store.add_task("写模块", root_id=goal.id, ts=now)
     a = store.add_task("学 Rust", ts=now)
@@ -59,7 +59,7 @@ def test_run_on_store_finds_persisted_cycle(store, now):
 
 
 def test_run_on_store_excludes_collected(store, now):
-    """已 COLLECTED 的任务不再被当候选(回收隔离)。"""
+    """A task already COLLECTED is never treated as a candidate again (reclaim isolation)."""
     store.add_task("G", is_root=True, ts=now)
     x = store.add_task("X", ts=now)
     t = store.get_task(x.id, record_view=False)

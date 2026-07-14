@@ -1,4 +1,4 @@
-# Python 字节码 / 打包产物
+# Python bytecode / build artifacts
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -7,12 +7,12 @@ build/
 dist/
 dist-*/
 
-# 虚拟环境
+# Virtual environments
 .venv/
 venv/
 env/
 
-# 测试 / 工具缓存
+# Test / tooling caches
 .pytest_cache/
 .pytest-tmp*/
 .mypy_cache/
@@ -20,15 +20,15 @@ env/
 .coverage
 htmlcov/
 
-# TodoGC 运行时数据库（用户数据，不入库）
+# TodoGC runtime database (user data, not checked in)
 *.db
 *.db.bak
 todogc.db
 
-# 编辑器 / 系统
+# Editor / OS
 .vscode/
 .idea/
 .DS_Store
 
-# 规划文档（内部用，不上传）
+# Planning doc (internal use, not uploaded)
 plan-todogc.md

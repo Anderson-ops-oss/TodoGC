@@ -1,4 +1,4 @@
-# test_report.py —— 展示层：GC 日志、时长格式、分代打脸文案与候选分组。
+# test_report.py — the presentation layer: the GC log, duration formatting, per-generation taunts, and candidate grouping.
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ from todogc.heap import Generation
 
 
 def _result(store, now):
-    """造一个含存活/陈旧/孤儿/环的真实 GCResult。
+    """Build a real GCResult containing alive/stale/orphan/cycle tasks.
 
     Args:
-        store: 内存 Store fixture。
-        now: 固定时间基准。
+        store: the in-memory Store fixture.
+        now: the fixed time base.
 
     Returns:
-        GCResult: 用于渲染测试的结果。
+        GCResult: a result for rendering tests.
     """
     goal = store.add_task("G", is_root=True, ts=now)
     active = store.add_task("A", root_id=goal.id, ts=now)
@@ -32,7 +32,7 @@ def _result(store, now):
 
 
 def test_gc_log_young_and_full(store, now):
-    """分别渲染 Pause Young / Full，并含运行时长、回收比例、环名。"""
+    """Renders Pause Young / Full respectively, including uptime, reclaim ratio, and cycle names."""
     res = _result(store, now)
     y = report.format_gc_log(
         res, gc_id=7, uptime=timedelta(days=3, hours=12), pause=timedelta(seconds=252), heap_max=50
@@ -47,12 +47,12 @@ def test_gc_log_young_and_full(store, now):
 
 
 def test_duration_format():
-    """时长格式化为 HH:MM:SS。"""
+    """Duration is formatted as HH:MM:SS."""
     assert report._fmt_duration(timedelta(seconds=252)) == "00:04:12"
 
 
 def test_generation_taunt_tiers():
-    """打脸文案按分代/年龄分档。"""
+    """The taunt is tiered by generation/age."""
     assert report.generation_taunt(Generation.EDEN, 0) == "All quiet."
     assert "survivor" in report.generation_taunt(Generation.SURVIVOR, 1)
     assert report.generation_taunt(Generation.SURVIVOR, 5) == "Veteran-in-waiting — you've skipped it 5 times."
@@ -64,7 +64,7 @@ def test_generation_taunt_tiers():
 
 
 def test_candidates_grouping(store, now):
-    """候选清单按 环 / 不可达 / 陈旧 分组，并能注入 views_of 打脸。"""
+    """The candidate listing is grouped by cycle / unreachable / stale, and can inject a views_of taunt."""
     res = _result(store, now)
     txt = report.format_candidates(res, views_of=store.view_count)
     assert "mutually vouching" in txt and "unreachable" in txt and "stale" in txt
@@ -74,7 +74,7 @@ def test_candidates_grouping(store, now):
 
 
 def test_format_report_accepts_typed_log_options(store, now):
-    """format_report 的显式参数应完整透传，避免 **object 破坏静态类型。"""
+    """format_report's explicit parameters should pass through completely, avoiding **object breaking static typing."""
     txt = report.format_report(
         _result(store, now),
         gc_id=9,
@@ -86,11 +86,11 @@ def test_format_report_accepts_typed_log_options(store, now):
 
 
 def test_heap_map(store, now):
-    """堆图：分代分区、-Xmx 占用(不计 Metaspace)、僵尸标 ☠(环/孤儿/陈旧)、root 标 ★、meta 标 ⊛。"""
+    """Heap map: generation sections, -Xmx usage (Metaspace excluded), zombies marked ☠ (cycle/orphan/stale), root marked ★, meta marked ⊛."""
     goal = store.add_task("G", is_root=True, ts=now)
-    store.add_task("A", root_id=goal.id, ts=now)  # 刚建、可达 → 存活，无标记
-    store.add_task("S", root_id=goal.id, ts=now - timedelta(days=40))  # 可达但陈旧
-    store.add_task("orphan", ts=now - timedelta(days=40))  # 不可达孤儿
+    store.add_task("A", root_id=goal.id, ts=now)  # just created, reachable -> alive, unmarked
+    store.add_task("S", root_id=goal.id, ts=now - timedelta(days=40))  # reachable but stale
+    store.add_task("orphan", ts=now - timedelta(days=40))  # unreachable orphan
     a = store.add_task("学 Rust", ts=now - timedelta(days=40))
     b = store.add_task("重写博客", ts=now - timedelta(days=40))
     store.add_dep(a.id, b.id)
@@ -100,15 +100,15 @@ def test_heap_map(store, now):
 
     txt = report.format_heap_map(res, store.root_ids(), heap_max=50)
     assert "Heap Memory Snapshot" in txt and "jmap" in txt
-    assert "-Xmx usage: 6 / 50" in txt  # 6 个非 meta 对象；Metaspace 不计入 -Xmx
+    assert "-Xmx usage: 6 / 50" in txt  # 6 non-meta objects; Metaspace doesn't count toward -Xmx
     assert f"★ #{goal.id} G" in txt
     assert f"☠ #{a.id} 学 Rust  (cycle #0)" in txt
     assert "(unreachable)" in txt and "(stale" in txt
     assert f"⊛ #{meta.id} 变得更自律" in txt
     assert "Eden" in txt and "Metaspace" in txt
-    assert "█" in txt and "░" in txt  # -Xmx 占用填充条
+    assert "█" in txt and "░" in txt  # the -Xmx usage fill bar
 
-    plain = report.format_heap_map(res, store.root_ids())  # 不给 -Xmx 的变体
+    plain = report.format_heap_map(res, store.root_ids())  # the variant with no -Xmx given
     assert "heap objects: 6" in plain and "no -Xmx set" in plain
 
     zh = report.format_heap_map(res, store.root_ids(), heap_max=50, lang="zh")
@@ -116,21 +116,21 @@ def test_heap_map(store, now):
 
 
 def test_heap_view(store, now):
-    """heap_view 结构化视图：分区顺序/命名、每行 kind 与 candidate、id 升序、used 计数、candidate_note。"""
+    """heap_view's structured view: section order/naming, each row's kind and candidate, ascending id, used count, candidate_note."""
     goal = store.add_task("G", is_root=True, ts=now)
-    live = store.add_task("A", root_id=goal.id, ts=now)  # 刚建、可达 → 存活普通
-    s = store.add_task("S", root_id=goal.id, ts=now - timedelta(days=40))  # 可达但陈旧
-    orphan = store.add_task("orphan", ts=now - timedelta(days=40))  # 不可达
+    live = store.add_task("A", root_id=goal.id, ts=now)  # just created, reachable -> alive, normal
+    s = store.add_task("S", root_id=goal.id, ts=now - timedelta(days=40))  # reachable but stale
+    orphan = store.add_task("orphan", ts=now - timedelta(days=40))  # unreachable
     a = store.add_task("学 Rust", ts=now - timedelta(days=40))
     b = store.add_task("重写博客", ts=now - timedelta(days=40))
     store.add_dep(a.id, b.id)
-    store.add_dep(b.id, a.id)  # 环
+    store.add_dep(b.id, a.id)  # a cycle
     meta = store.add_task("变得更自律", meta=True, ts=now)
     res = Collector().run_on_store(store, store.root_ids(), extra_edges=store.deps(), now=now)
 
     sections = report.heap_view(res, store.root_ids())
 
-    # 分区顺序与中英文名固定：Eden → Survivor → Old → Metaspace
+    # Section order and English/Chinese names are fixed: Eden -> Survivor -> Old -> Metaspace
     assert [(s_.gen, s_.name_en, s_.name_cn) for s_ in sections] == [
         (Generation.EDEN, "Eden", "新生代"),
         (Generation.SURVIVOR, "Survivor", "幸存区"),
@@ -139,14 +139,14 @@ def test_heap_view(store, now):
     ]
     by_gen = {s_.gen: s_ for s_ in sections}
 
-    # 空代 → 空 rows
+    # Empty generation -> empty rows
     assert by_gen[Generation.SURVIVOR].rows == [] and by_gen[Generation.OLD].rows == []
 
-    # Eden 内按 id 升序
+    # Ascending by id within Eden
     eden = by_gen[Generation.EDEN].rows
     assert [r.task.id for r in eden] == sorted(r.task.id for r in eden)
 
-    # 逐行断言标记类别与候选
+    # Assert marker category and candidate row by row
     row = {r.task.id: r for r in eden}
     assert row[goal.id].kind is report.RowKind.ROOT and row[goal.id].candidate is None
     assert row[live.id].kind is report.RowKind.NORMAL and row[live.id].candidate is None
@@ -155,16 +155,16 @@ def test_heap_view(store, now):
     assert row[a.id].kind is report.RowKind.ZOMBIE
     assert row[a.id].candidate.reason is Reason.CYCLE and row[a.id].candidate.cycle_id == 0
 
-    # meta 落 Metaspace，kind=META、非候选
+    # meta lands in Metaspace, kind=META, not a candidate
     meta_rows = by_gen[Generation.META].rows
     assert len(meta_rows) == 1
     assert meta_rows[0].task.id == meta.id
     assert meta_rows[0].kind is report.RowKind.META and meta_rows[0].candidate is None
 
-    # used 计数排除 meta：goal/A/S/orphan/学/重写 = 6
+    # used count excludes meta: goal/A/S/orphan/学/重写 = 6
     assert report.heap_used_count(res) == 6
 
-    # candidate_note 三种原因的短注解(与文本堆图括号内容同源)
+    # candidate_note's short annotation for all three causes (same source as the text heap map's parenthetical)
     assert report.candidate_note(row[a.id].candidate) == "cycle #0"
     assert report.candidate_note(row[orphan.id].candidate) == "unreachable"
     assert report.candidate_note(row[s.id].candidate) == "stale · progressed 0 skipped 0"

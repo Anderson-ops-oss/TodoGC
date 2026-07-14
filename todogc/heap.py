@@ -1,4 +1,5 @@
-# heap.py —— 领域模型：把一条待办建模成 GC 堆里的一个对象(Task)，把每次交互建模成一次触碰事件(Touch)。
+# heap.py — the domain model: models a todo as an object on the GC heap (Task), and each
+# interaction as a touch event (Touch).
 
 from __future__ import annotations
 
@@ -6,56 +7,62 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 
-# 对象年龄晋升老年代的阈值。取 15 —— 真实 JVM 里对象年龄存于对象头 mark word，
-# 只有 4 bit，最多存到 15，故 -XX:MaxTenuringThreshold 默认即 15。自欺满 15 次强制转正。
+from todogc.i18n import t as _t
+
+# The age threshold for promotion to Old generation. 15, because in the real JVM an object's
+# age lives in its object header's mark word, which only has 4 bits and tops out at 15 — so
+# -XX:MaxTenuringThreshold defaults to 15 too. Fifteen rounds of self-deception earns tenure.
 TENURING_THRESHOLD: int = 15
 
 
 class TouchKind(str, Enum):
-    """一次触碰事件的类型；判活、GC 日志、分代年龄都由这些事件聚合而来。"""
+    """The type of a touch event; liveness, the GC log, and generational age are all aggregated from these events."""
 
-    CREATE = "create"      # 任务被创建(对象分配 / allocation)
-    VIEW = "view"          # 你查看了它——被记录，但不算推进
-    PROGRESS = "progress"  # 你真正推进了它(算 refcount)
-    EDIT = "edit"          # 你编辑了内容(算 refcount)
-    DEFER = "defer"        # 你把它往后推(喂 skip_count)
-    LINK = "link"          # (重新)关联到某个 GC root
-    REVIVE = "revive"      # 在回收仪式里被复活
-    COLLECT = "collect"    # 被回收(note 里存遗言)
-    RESTORE = "restore"    # 从垃圾桶恢复
+    CREATE = "create"      # the task was created (object allocation)
+    VIEW = "view"          # you looked at it — logged, but doesn't count as progress
+    PROGRESS = "progress"  # you actually made progress on it (counts toward refcount)
+    EDIT = "edit"          # you edited its content (counts toward refcount)
+    DEFER = "defer"        # you pushed it back (feeds skip_count)
+    LINK = "link"          # (re-)linked to a GC root
+    REVIVE = "revive"      # revived during the collection ceremony
+    COLLECT = "collect"    # collected (the eulogy goes in note)
+    RESTORE = "restore"    # restored from the trash
 
     @property
     def is_progress(self) -> bool:
-        """该事件是否算作"真推进"(计入 refcount)。
+        """Whether this event counts as "real progress" (counted toward refcount).
 
         Returns:
-            bool: PROGRESS / EDIT 为 True，其余(含反复 VIEW)为 False。
+            bool: True for PROGRESS / EDIT, False for everything else (including repeated
+                VIEWs).
         """
         return self in _PROGRESS_KINDS
 
 
-# 计入 refcount 的事件类型：只有主动推进/编辑算数，反复查看不加分。
+# Event types that count toward refcount: only active progress/editing counts, repeated
+# viewing earns no points.
 _PROGRESS_KINDS: frozenset[TouchKind] = frozenset({TouchKind.PROGRESS, TouchKind.EDIT})
 
 
 class Generation(str, Enum):
-    """任务所处的分代，对应 JVM 堆的分代结构。"""
+    """The generation a task is in, mirroring the JVM heap's generational structure."""
 
-    EDEN = "eden"          # 新分配的对象
-    SURVIVOR = "survivor"  # 熬过至少一轮 GC 的幸存者
-    OLD = "old"            # 晋升老年代(Tenured)的老赖
-    META = "meta"          # Metaspace：关于任务的"元任务"，几乎不回收
+    EDEN = "eden"          # a newly allocated object
+    SURVIVOR = "survivor"  # a survivor of at least one GC round
+    OLD = "old"            # a deadbeat promoted to Old generation (Tenured)
+    META = "meta"          # Metaspace: a "meta-task" about tasks, almost never reclaimed
 
     @classmethod
     def for_age(cls, age: int) -> Generation:
-        """根据"熬过的 GC 轮数"推出常规分代(不含 META，META 需显式指定)。
+        """Derive the regular generation from "GC rounds survived" (excludes META, which must be set explicitly).
 
         Args:
-            age (int): 该任务被列为回收候选却又被复活的累计次数。
+            age (int): the cumulative number of times this task was listed as a reclaim
+                candidate and then revived.
 
         Returns:
-            Generation: age <= 0 → EDEN；0 < age < TENURING_THRESHOLD → SURVIVOR；
-                age >= TENURING_THRESHOLD → OLD。
+            Generation: EDEN if age <= 0; SURVIVOR if 0 < age < TENURING_THRESHOLD; OLD if
+                age >= TENURING_THRESHOLD.
         """
         if age <= 0:
             return cls.EDEN
@@ -65,31 +72,31 @@ class Generation(str, Enum):
 
 
 class ReferenceStrength(str, Enum):
-    """任务的保留强度：决定一个可达对象面对活跃度检查时有多难被回收。"""
+    """A task's retention strength: determines how hard a reachable object is to reclaim under the liveness check."""
 
-    STRONG = "strong"  # 可达即保留
-    SOFT = "soft"      # 默认：按近期有效活动与连续推迟判活
-    WEAK = "weak"      # 必须在时间窗内有真实推进
+    STRONG = "strong"  # reachable is enough to keep it
+    SOFT = "soft"      # default: liveness by recent real activity and consecutive skips
+    WEAK = "weak"      # must have real progress within the time window
 
 
 class State(str, Enum):
-    """任务在回收流程中的生命周期状态。"""
+    """A task's lifecycle state within the collection pipeline."""
 
-    LIVE = "live"            # 存活
-    CANDIDATE = "candidate"  # 已被标记为回收候选，等待仪式处置
-    COLLECTED = "collected"  # 已回收，躺在垃圾桶里(可恢复)
+    LIVE = "live"            # alive
+    CANDIDATE = "candidate"  # marked as a reclaim candidate, awaiting the ceremony
+    COLLECTED = "collected"  # collected, sitting in the trash (recoverable)
 
 
 @dataclass
 class Touch:
-    """一次触碰事件：判活的唯一真相来源，只追加、不修改。
+    """A touch event: the single source of truth for liveness, append-only and never modified.
 
     Attributes:
-        task_id (int): 所属任务的 id。
-        kind (TouchKind): 事件类型。
-        ts (datetime): 事件发生时间(建议统一存 UTC)。
-        note (str | None): 附加文本——进展说明 / 推迟理由 / 遗言。
-        id (int | None): 主键；尚未落库时为 None。
+        task_id (int): id of the task it belongs to.
+        kind (TouchKind): the event type.
+        ts (datetime): when the event occurred (recommended to always store as UTC).
+        note (str | None): attached text — progress note / snooze reason / eulogy.
+        id (int | None): the primary key; None if not yet persisted.
     """
 
     task_id: int
@@ -100,26 +107,27 @@ class Touch:
 
     @property
     def is_progress(self) -> bool:
-        """该次触碰是否算作真推进。
+        """Whether this touch counts as real progress.
 
         Returns:
-            bool: 委托给 self.kind.is_progress 的结果。
+            bool: delegates to self.kind.is_progress.
         """
         return self.kind.is_progress
 
 
 @dataclass
 class Task:
-    """一条待办 = GC 堆里的一个对象。
+    """A todo = an object on the GC heap.
 
     Attributes:
-        title (str): 任务标题。
-        root_id (int | None): 关联到的 GC root(活跃目标)id；None 表示未关联，天然回收候选。
-        gen (Generation): 当前分代。
-        age (int): 熬过的 GC 轮数，用于分代晋升。
-        state (State): 生命周期状态。
-        created_at (datetime | None): 创建时间；由 store 在落库时写入。
-        id (int | None): 主键；尚未落库时为 None。
+        title (str): the task title.
+        root_id (int | None): id of the linked GC root (active goal); None means unlinked, a
+            natural reclaim candidate.
+        gen (Generation): the current generation.
+        age (int): GC rounds survived, used for generation promotion.
+        state (State): the lifecycle state.
+        created_at (datetime | None): creation time; written by store when persisted.
+        id (int | None): the primary key; None if not yet persisted.
     """
 
     title: str
@@ -133,41 +141,43 @@ class Task:
 
     @property
     def is_unlinked(self) -> bool:
-        """是否未关联任何 GC root(未关联即天然的回收候选)。
+        """Whether this task isn't linked to any GC root (unlinked is a natural reclaim candidate).
 
         Returns:
-            bool: root_id 为 None 时返回 True。
+            bool: True if root_id is None.
         """
         return self.root_id is None
 
     @property
     def persisted_id(self) -> int:
-        """返回已落库 id；未落库对象调用时立即失败。
+        """Return the persisted id; fails immediately if called on an object that isn't persisted yet.
 
-        这是从 ``Task`` 的草稿态进入持久化操作的类型安全边界：调用方拿到的恒为
-        ``int``，无需把 ``int | None`` 传播到 Store、审计和 UI 层。
+        This is the type-safety boundary between a ``Task``'s draft state and persistence
+        operations: the caller always gets back an ``int``, with no need to propagate
+        ``int | None`` into Store, audit, or the UI layer.
         """
         if self.id is None:
-            raise ValueError("任务尚未落库，没有可用 id")
+            raise ValueError(_t("heap.error.not_persisted"))
         return self.id
 
     @property
     def is_meta(self) -> bool:
-        """是否为常驻 Metaspace 的元任务。
+        """Whether this is a meta-task permanently living in Metaspace.
 
         Returns:
-            bool: gen 为 Generation.META 时返回 True。
+            bool: True if gen is Generation.META.
         """
         return self.gen is Generation.META
 
     def aged(self) -> Task:
-        """产出"又熬过一轮 GC"后的新任务：age +1，并据此更新常规分代。
+        """Produce a new task after "surviving one more GC round": age +1, with its regular generation updated accordingly.
 
-        元任务(META)不参与常规晋升，返回一个原值副本。不就地修改而是返回新对象，
-        以保持 dataclass 的值语义，便于测试与审计。
+        Meta-tasks (META) don't participate in regular promotion and get back an unchanged
+        copy. Returns a new object rather than mutating in place, to preserve the dataclass's
+        value semantics and keep testing and auditing easy.
 
         Returns:
-            Task: age 递增、gen 相应晋升后的新 Task 实例。
+            Task: a new Task instance with age incremented and gen promoted accordingly.
         """
         if self.is_meta:
             return replace(self)

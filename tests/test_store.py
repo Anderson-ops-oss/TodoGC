@@ -1,4 +1,4 @@
-# test_store.py —— 持久化层：埋点、判活指标、时间窗、roots 与依赖边。
+# test_store.py — the persistence layer: event tracking, liveness metrics, time windows, roots, and dependency edges.
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ from todogc.heap import Generation, State, TouchKind
 
 
 def test_add_task_records_create(store, now):
-    """add_task 落库并自动记一条 CREATE。"""
+    """add_task persists and automatically logs a CREATE."""
     t = store.add_task("学吉他", ts=now)
     assert t.id is not None and t.created_at == now
     assert [x.kind for x in store.touches(t.id)] == [TouchKind.CREATE]
 
 
 def test_view_progress_defer_and_window(store, now):
-    """view 不计 refcount；progress 计；defer 计 skip；时间窗排除 31 天前。"""
+    """view doesn't count toward refcount; progress does; defer counts toward skip; the time window excludes anything older than 31 days."""
     t = store.add_task("t", ts=now)
     store.get_task(t.id, ts=now)
     assert store.view_count(t.id) == 1 and store.refcount(t.id) == 0
@@ -31,7 +31,7 @@ def test_view_progress_defer_and_window(store, now):
 
 
 def test_record_view_flag(store, now):
-    """record_view=False 时读取不留 view(供 collector 扫描用)。"""
+    """With record_view=False, a read leaves no view (used by the collector's scans)."""
     t = store.add_task("t", ts=now)
     store.get_task(t.id, record_view=False)
     store.list_tasks(record_view=False)
@@ -39,7 +39,7 @@ def test_record_view_flag(store, now):
 
 
 def test_roots(store, now):
-    """set_root / root_ids 增删正确。"""
+    """set_root / root_ids add and remove correctly."""
     a = store.add_task("a", is_root=True, ts=now)
     b = store.add_task("b", ts=now)
     assert store.root_ids() == {a.id}
@@ -50,11 +50,11 @@ def test_roots(store, now):
 
 
 def test_deps(store, now):
-    """add_dep 幂等 / remove 生效 / 自环与不存在 id 抛 ValueError。"""
+    """add_dep is idempotent / remove takes effect / a self-loop or nonexistent id raises ValueError."""
     a = store.add_task("a", ts=now)
     b = store.add_task("b", ts=now)
     store.add_dep(a.id, b.id)
-    store.add_dep(a.id, b.id)  # 幂等
+    store.add_dep(a.id, b.id)  # idempotent
     assert store.deps() == [(a.id, b.id)]
     store.remove_dep(a.id, b.id)
     assert store.deps() == []
@@ -65,7 +65,7 @@ def test_deps(store, now):
 
 
 def test_update_task_persists(store, now):
-    """update_task 回写分代 / 年龄 / 状态。"""
+    """update_task writes back generation / age / state."""
     t = store.add_task("t", ts=now)
     promoted = t.aged()
     promoted.state = State.CANDIDATE
@@ -75,16 +75,16 @@ def test_update_task_persists(store, now):
 
 
 def test_record_watch_tick_upsert_semantics(store, now):
-    """notified_at=None 只更新 status、不清空既有去抖时间戳；传了才盖新值。"""
+    """notified_at=None only updates status without clearing the existing debounce timestamp; passing a value stamps a new one."""
     t = store.add_task("t", ts=now)
     store.record_watch_tick(t.id, "stale", notified_at=now)
     assert store.watch_states()[t.id].status == "stale"
     assert store.watch_states()[t.id].notified_at == now
 
-    store.record_watch_tick(t.id, "cycle:0")  # 状态变了，但这轮没推送
+    store.record_watch_tick(t.id, "cycle:0")  # status changed, but nothing was pushed this round
     state = store.watch_states()[t.id]
     assert state.status == "cycle:0"
-    assert state.notified_at == now  # 去抖时间戳保留，不是被清空成 None
+    assert state.notified_at == now  # the debounce timestamp is preserved, not cleared to None
 
     later = now + timedelta(hours=1)
     store.record_watch_tick(t.id, "cycle:0", notified_at=later)
@@ -92,35 +92,35 @@ def test_record_watch_tick_upsert_semantics(store, now):
 
 
 def test_watch_meta_get_set_roundtrip(store):
-    """watch_meta 是通用键值表：没写过返回 None，写过原样读回。"""
+    """watch_meta is a generic key-value table: returns None if never written, reads back exactly what was written."""
     assert store.watch_meta_get("last_digest_at") is None
     store.watch_meta_set("last_digest_at", "2026-07-10T12:00:00+00:00")
     assert store.watch_meta_get("last_digest_at") == "2026-07-10T12:00:00+00:00"
-    store.watch_meta_set("last_digest_at", "2026-07-11T00:00:00+00:00")  # 覆盖而非报错
+    store.watch_meta_set("last_digest_at", "2026-07-11T00:00:00+00:00")  # overwrites rather than erroring
     assert store.watch_meta_get("last_digest_at") == "2026-07-11T00:00:00+00:00"
 
 
 def test_watch_lock_single_owner_and_stale_takeover(store, now):
-    """建议性锁：心跳新鲜时别的 pid 抢不走；心跳过期后允许接管；释放/续期认 pid。"""
+    """Advisory lock: another pid can't steal it while the heartbeat is fresh; takeover is allowed once the heartbeat is stale; release/renew respect the owning pid."""
     stale_after = timedelta(seconds=60)
     assert store.try_acquire_watch_lock(pid=100, now=now, stale_after=stale_after) is True
-    # 心跳仍新鲜，另一个 pid 抢不到。
+    # heartbeat still fresh, another pid can't take it.
     assert store.try_acquire_watch_lock(pid=200, now=now + timedelta(seconds=10), stale_after=stale_after) is False
 
-    # 错误的 pid 续期是 no-op，不影响持锁者的心跳时间戳。
+    # renewing with the wrong pid is a no-op, doesn't affect the lock holder's heartbeat timestamp.
     store.heartbeat_watch_lock(pid=200, now=now + timedelta(seconds=20))
     assert store.watch_meta_get("watch_lock_pid") == "100"
 
-    # 持锁者正常续期。
+    # the lock holder renews normally.
     store.heartbeat_watch_lock(pid=100, now=now + timedelta(seconds=20))
     assert store.watch_meta_get("watch_lock_heartbeat_at") == store._to_iso(now + timedelta(seconds=20))
 
-    # 心跳过期(超过 stale_after 没续)，新 pid 可以接管。
+    # heartbeat expired (not renewed within stale_after), a new pid can take over.
     stale_now = now + timedelta(seconds=20) + stale_after + timedelta(seconds=1)
     assert store.try_acquire_watch_lock(pid=200, now=stale_now, stale_after=stale_after) is True
     assert store.watch_meta_get("watch_lock_pid") == "200"
 
-    # 错误 pid 释放是 no-op；真正持锁者释放才清空。
+    # releasing with the wrong pid is a no-op; only the actual lock holder releasing clears it.
     store.release_watch_lock(pid=100)
     assert store.watch_meta_get("watch_lock_pid") == "200"
     store.release_watch_lock(pid=200)

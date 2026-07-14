@@ -225,6 +225,8 @@ MESSAGES: dict[str, str] = {
     "config.error.invalid_gc_mode": "gc.mode must be gentle / normal / aggressive",
     "config.error.invalid_lang": "i18n.lang must be one of {langs}",
     "config.error.ntfy_topic_required": "notify.ntfy_topic is required when notify.ntfy_enabled is true",
+    # heap.py
+    "heap.error.not_persisted": "Task has not been persisted yet, no id available",
     # store.py
     "store.error.insert_no_rowid": "SQLite INSERT did not return a lastrowid",
     "store.error.empty_title": "Task title cannot be empty",

@@ -1,4 +1,6 @@
-# collector.py —— GC 引擎核心：从 roots 出发做可达性标记、用强连通分量抓循环引用孤岛，再按判活公式清除，产出一份回收候选清单。
+# collector.py — the GC engine's core: marks reachability from the roots, catches
+# reference-cycle islands via strongly connected components, then sweeps by the liveness
+# formula to produce a reclaim candidate listing.
 
 from __future__ import annotations
 
@@ -13,17 +15,17 @@ from todogc.heap import ReferenceStrength, State, Task, TouchKind
 from todogc.i18n import DEFAULT_LOCALE
 from todogc.i18n import t as _t
 
-if TYPE_CHECKING:  # 仅类型标注用，避免运行期 collector→store 的硬依赖
+if TYPE_CHECKING:  # type-checking only, avoids a hard runtime collector -> store dependency
     from todogc.store import Store
 
 
 @dataclass
 class GCPolicy:
-    """判活口径(阈值集中一处，方便调到"让人心虚"的程度)。
+    """Liveness thresholds (kept in one place so you can tune them until they make you uneasy).
 
     Attributes:
-        recent_days (int): "最近碰过"的时间窗天数。
-        max_skips (int): 推迟次数达到该值即判死(不含)。
+        recent_days (int): the window, in days, for "recently touched".
+        max_skips (int): reaching this many skips (exclusive) marks a task dead.
     """
 
     recent_days: int = 30
@@ -39,7 +41,7 @@ class GCPolicy:
 
     @property
     def effective_recent_days(self) -> int:
-        """按模式调整活跃时间窗。"""
+        """Adjust the active time window by mode."""
         if self.mode == "gentle":
             return self.recent_days * 2
         if self.mode == "aggressive":
@@ -48,7 +50,7 @@ class GCPolicy:
 
     @property
     def effective_max_skips(self) -> int:
-        """按模式调整连续推迟容忍度。"""
+        """Adjust the consecutive-skip tolerance by mode."""
         if self.mode == "gentle":
             return self.max_skips + 2
         if self.mode == "aggressive":
@@ -58,13 +60,14 @@ class GCPolicy:
 
 @dataclass
 class TaskMetrics:
-    """单个任务的判活指标快照(由 store 聚合触碰事件得来)。
+    """A single task's liveness metrics snapshot (aggregated by store from touch events).
 
     Attributes:
-        refcount_30d (int): 近 recent_days 天的真推进(PROGRESS/EDIT)次数。
-        skip_count (int): 累计推迟(DEFER)次数。
-        days_since_touch (float | None): 距最近一次"非 view"触碰(含 CREATE)的天数；
-            无任何此类事件时为 None。
+        refcount_30d (int): count of real progress events (PROGRESS/EDIT) in the last
+            recent_days days.
+        skip_count (int): cumulative count of skips (DEFER).
+        days_since_touch (float | None): days since the most recent non-"view" touch
+            (including CREATE); None if there's never been one.
     """
 
     refcount_30d: int
@@ -76,20 +79,20 @@ class TaskMetrics:
 
 
 class Reason(str, Enum):
-    """一个任务被列为回收候选的原因。"""
+    """Why a task was listed as a reclaim candidate."""
 
-    STALE = "stale"              # 可达，但判活指标已死(没推进 / 推迟太多)
-    UNREACHABLE = "unreachable"  # 从任何活跃 root 都不可达的孤儿
-    CYCLE = "cycle"              # 不可达，且陷在"互相担保"的引用环里
+    STALE = "stale"              # reachable, but its liveness metrics are dead (no progress / too many skips)
+    UNREACHABLE = "unreachable"  # an orphan unreachable from any active root
+    CYCLE = "cycle"              # unreachable, and stuck in a mutually-vouching reference cycle
 
 
 @dataclass
 class Cycle:
-    """一个被判死的引用环(孤岛)。
+    """A reference cycle (island) marked dead.
 
     Attributes:
-        id (int): 环的序号(供候选项回指)。
-        task_ids (list[int]): 环上的任务 id，升序。
+        id (int): the cycle's sequence number (referenced back from candidates).
+        task_ids (list[int]): task ids on the cycle, ascending.
     """
 
     id: int
@@ -98,14 +101,15 @@ class Cycle:
 
 @dataclass
 class Candidate:
-    """一条回收候选：一个僵尸任务 + 它为什么该死。
+    """A reclaim candidate: a zombie task + why it deserves to die.
 
     Attributes:
-        task (Task): 候选任务本身。
-        reason (Reason): 判死原因。
-        cycle_id (int | None): 当 reason 为 CYCLE 时，所属环的 id。
-        metrics (TaskMetrics | None): 判活指标快照(STALE 时附带，便于打脸)。
-        detail (str): 一句人话解释。
+        task (Task): the candidate task itself.
+        reason (Reason): the cause of death.
+        cycle_id (int | None): the id of the cycle it belongs to, when reason is CYCLE.
+        metrics (TaskMetrics | None): a liveness metrics snapshot (attached for STALE, for
+            the taunt).
+        detail (str): a one-sentence human-readable explanation.
     """
 
     task: Task
@@ -117,12 +121,12 @@ class Candidate:
 
 @dataclass
 class GCResult:
-    """一次 GC 的产出。
+    """The output of one GC.
 
     Attributes:
-        survivors (list[Task]): 判定存活的任务。
-        candidates (list[Candidate]): 回收候选清单。
-        cycles (list[Cycle]): 检出的引用环。
+        survivors (list[Task]): tasks judged to be alive.
+        candidates (list[Candidate]): the reclaim candidate listing.
+        cycles (list[Cycle]): reference cycles detected.
     """
 
     survivors: list[Task] = field(default_factory=list)
@@ -131,24 +135,26 @@ class GCResult:
 
     @property
     def released_pct(self) -> float:
-        """本轮回收比例 = 候选数 / 总数，用于 GC 日志的"释放认知内存 %"。
+        """This round's reclaim ratio = candidate count / total, used for the GC log's "cognitive memory freed %".
 
         Returns:
-            float: 保留 1 位小数的百分比；无任务时为 0.0。
+            float: a percentage rounded to 1 decimal place; 0.0 if there are no tasks.
         """
         total = len(self.survivors) + len(self.candidates)
         return 0.0 if total == 0 else round(100 * len(self.candidates) / total, 1)
 
 
 class Collector:
-    """标记-清除回收器：把一张任务引用图判成 存活 / 候选，并揪出循环引用。"""
+    """Mark-and-sweep collector: judges a task reference graph into alive / candidate, and roots out reference cycles."""
 
     def __init__(self, policy: GCPolicy | None = None, *, lang: str = DEFAULT_LOCALE) -> None:
-        """构造回收器。
+        """Construct a collector.
 
         Args:
-            policy (GCPolicy | None): 判活口径；None 用默认(30 天 / 5 次)。
-            lang (str): candidate.detail 人话解释使用的语言，默认英文。
+            policy (GCPolicy | None): liveness thresholds; None uses the default (30 days /
+                5 skips).
+            lang (str): language used for candidate.detail's human-readable explanation;
+                defaults to English.
 
         Returns:
             None
@@ -163,19 +169,23 @@ class Collector:
         edges: dict[int, set[int]],
         metrics_of: Callable[[int], TaskMetrics],
     ) -> GCResult:
-        """对给定的任务引用图跑一次标记-清除。
+        """Run one mark-and-sweep pass over the given task reference graph.
 
-        存活判定：是 root、是元任务(Metaspace)、或"可达 且 判活指标活着"。
-        其余进候选：不可达者按是否成环分 CYCLE / UNREACHABLE，可达但指标死者为 STALE。
+        Liveness: a task is alive if it's a root, a meta-task (Metaspace), or "reachable
+        and its liveness metrics are alive". Everything else becomes a candidate: unreachable
+        tasks split into CYCLE / UNREACHABLE depending on whether they're on a cycle;
+        reachable tasks with dead metrics become STALE.
 
         Args:
-            tasks (dict[int, Task]): id → Task 的全体堆对象。
-            roots (set[int]): GC roots(活跃目标)的 id 集合。
-            edges (dict[int, set[int]]): 引用邻接表；edges[x] = x 所引用(需要)的 id 集合。
-            metrics_of (Callable[[int], TaskMetrics]): 按 id 取判活指标的回调。
+            tasks (dict[int, Task]): id -> Task for the entire heap.
+            roots (set[int]): ids of the GC roots (active targets).
+            edges (dict[int, set[int]]): reference adjacency list; edges[x] = ids x
+                references (needs).
+            metrics_of (Callable[[int], TaskMetrics]): callback that looks up liveness
+                metrics by id.
 
         Returns:
-            GCResult: 存活、候选与检出的引用环。
+            GCResult: survivors, candidates, and detected reference cycles.
         """
         all_ids = set(tasks)
         reachable = self._mark(roots, edges, all_ids)
@@ -224,22 +234,25 @@ class Collector:
         extra_edges: Iterable[tuple[int, int]] | None = None,
         now: datetime | None = None,
     ) -> GCResult:
-        """从 Store 组装引用图并跑一次 GC(端到端入口)。
+        """Assemble the reference graph from a Store and run one GC (the end-to-end entry point).
 
-        用 record_view=False 扫全表，避免 GC 自身的扫描污染 view 埋点。
+        Scans the full table with record_view=False, so the GC's own scan doesn't pollute
+        view tracking.
 
         Args:
-            store (Store): 数据源。
-            root_ids (Iterable[int]): 声明为活跃 root 的任务 id。
-            extra_edges (Iterable[tuple[int, int]] | None): 额外的 task→task "理由"边
-                (a, b) 表示 a 引用 b；持久化这类边需 store 增 dep 表，暂由此传入。
-            now (datetime | None): 判活时间基准；None 用当前 UTC。
+            store (Store): the data source.
+            root_ids (Iterable[int]): ids of tasks declared as active roots.
+            extra_edges (Iterable[tuple[int, int]] | None): extra task->task "reason" edges;
+                (a, b) means a references b. Persisting these edges needs a dep table in
+                store, passed in here for now.
+            now (datetime | None): the liveness time base; None uses the current UTC time.
 
         Returns:
-            GCResult: 本轮 GC 结果。
+            GCResult: this round's GC result.
         """
         now = now or datetime.now(timezone.utc)
-        # 已回收(COLLECTED)的任务躺在垃圾桶里，不该被下一轮 GC 再刨出来当候选。
+        # Already-collected (COLLECTED) tasks sit in the trash; the next GC round shouldn't
+        # dig them back up as candidates.
         tasks = {
             t.persisted_id: t
             for t in store.list_tasks(record_view=False)
@@ -248,7 +261,7 @@ class Collector:
         edges: dict[int, set[int]] = defaultdict(set)
         for t in tasks.values():
             if t.root_id is not None:
-                edges[t.root_id].add(t.persisted_id)  # 父(目标/任务)引用子任务
+                edges[t.root_id].add(t.persisted_id)  # the parent (goal/task) references its child task
         for a, b in extra_edges or ():
             edges[a].add(b)
 
@@ -279,8 +292,10 @@ class Collector:
                 days_since_restore=restore_days,
             )
 
-        # 刚复活/恢复的孤儿在宽限期内作为临时 GC root，避免下一轮立即再次回收；
-        # 宽限期结束后若仍未重连，会自然回到不可达候选。
+        # An orphan that was just revived/restored acts as a temporary GC root during the
+        # grace period, so the next round doesn't immediately reclaim it again; once the
+        # grace period ends without being re-linked, it naturally falls back to an
+        # unreachable candidate.
         root_set = set(root_ids)
         for tid in tasks:
             last_restore = max(
@@ -298,19 +313,19 @@ class Collector:
 
         return self.collect(tasks, root_set, dict(edges), metrics_of)
 
-    # ---- 内部：mark / cycle / 判活 ----
+    # ---- internal: mark / cycle / liveness ----
 
     @staticmethod
     def _mark(roots: set[int], edges: dict[int, set[int]], all_ids: set[int]) -> set[int]:
-        """MARK 阶段：从 roots 出发沿引用边可达的 id 全部标记存活。
+        """MARK phase: mark every id reachable from the roots along reference edges as alive.
 
         Args:
-            roots (set[int]): 起点 id 集合。
-            edges (dict[int, set[int]]): 引用邻接表。
-            all_ids (set[int]): 全体任务 id(用于过滤悬空引用)。
+            roots (set[int]): ids to start from.
+            edges (dict[int, set[int]]): reference adjacency list.
+            all_ids (set[int]): all task ids (used to filter out dangling references).
 
         Returns:
-            set[int]: 可达(存活)的 id 集合，含 roots 自身。
+            set[int]: the reachable (alive) id set, including the roots themselves.
         """
         seen: set[int] = set()
         stack = [r for r in roots if r in all_ids]
@@ -319,24 +334,25 @@ class Collector:
             if x in seen:
                 continue
             seen.add(x)
-            for y in edges.get(x, ()):  # noqa: SIM118 - edges 是普通 dict
+            for y in edges.get(x, ()):  # noqa: SIM118 - edges is a plain dict
                 if y in all_ids and y not in seen:
                     stack.append(y)
         return seen
 
     @staticmethod
     def _find_cycles(nodes: set[int], edges: dict[int, set[int]]) -> list[Cycle]:
-        """在给定节点的诱导子图上用 Tarjan(迭代版)求强连通分量，取出其中的环。
+        """Run Tarjan's algorithm (iterative) on the induced subgraph of the given nodes to find strongly connected components, and pull out the cycles among them.
 
-        环 = 规模 >= 2 的强连通分量，或带自环的单点。仅在 nodes(通常是不可达集)
-        内部的边上计算，因此挂在 root 上的合法环不会被误伤。
+        A cycle is a strongly connected component of size >= 2, or a single node with a
+        self-loop. Computed only over edges internal to nodes (typically the unreachable
+        set), so a legitimate cycle hanging off a root is never caught by mistake.
 
         Args:
-            nodes (set[int]): 参与检测的节点 id(诱导子图顶点)。
-            edges (dict[int, set[int]]): 全图引用邻接表。
+            nodes (set[int]): node ids to check (vertices of the induced subgraph).
+            edges (dict[int, set[int]]): the full-graph reference adjacency list.
 
         Returns:
-            list[Cycle]: 检出的环，按发现顺序编号。
+            list[Cycle]: detected cycles, numbered in discovery order.
         """
         sub = {n: [y for y in edges.get(n, ()) if y in nodes] for n in nodes}
         index: dict[int, int] = {}
@@ -382,7 +398,7 @@ class Collector:
                             break
                     sccs.append(comp)
                 work.pop()
-                if work:  # 回溯：把子节点的 low 合并给父节点
+                if work:  # backtrack: merge the child's low value into the parent's
                     low[work[-1][0]] = min(low[work[-1][0]], low[node])
 
         cycles: list[Cycle] = []
@@ -393,15 +409,16 @@ class Collector:
         return cycles
 
     def _metrics_alive(self, task: Task, m: TaskMetrics) -> bool:
-        """按判活公式判断"指标是否还活着"(可达之外的第二道门槛)。
+        """Apply the liveness formula to decide whether the metrics are "still alive" (the second gate beyond reachability).
 
-        alive = (最近碰过 或 近 N 天有真推进) 且 推迟未超阈值。
+        alive = (touched recently, or had real progress in the last N days) and skips
+        haven't exceeded the threshold.
 
         Args:
-            m (TaskMetrics): 判活指标快照。
+            m (TaskMetrics): the liveness metrics snapshot.
 
         Returns:
-            bool: 存活为 True。
+            bool: True if alive.
         """
         if task.ref_strength is ReferenceStrength.STRONG:
             return True

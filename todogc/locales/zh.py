@@ -206,6 +206,8 @@ MESSAGES: dict[str, str] = {
     "config.error.invalid_gc_mode": "gc.mode 必须是 gentle / normal / aggressive",
     "config.error.invalid_lang": "i18n.lang 必须是 {langs} 之一",
     "config.error.ntfy_topic_required": "notify.ntfy_enabled 为 true 时必须配置 notify.ntfy_topic",
+    # heap.py
+    "heap.error.not_persisted": "任务尚未落库，没有可用 id",
     # store.py
     "store.error.insert_no_rowid": "SQLite INSERT 未返回 lastrowid",
     "store.error.empty_title": "任务标题不能为空",

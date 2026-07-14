@@ -1,4 +1,4 @@
-"""v0.2 功能：迁移、引用强度、策略、连续推迟、配置、新 CLI 与统计。"""
+"""v0.2 features: migration, reference strength, policy, consecutive skips, config, the new CLI, and stats."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from todogc.store import Store
 
 
 def _old_database(path, now) -> None:
-    """创建没有 schema_meta/ref_strength 的 v1 数据库。"""
+    """Create a v1 database with no schema_meta/ref_strength."""
     conn = sqlite3.connect(path)
     conn.executescript(
         """
@@ -54,7 +54,7 @@ def test_old_database_migrates_and_backs_up(tmp_path, now):
         assert task.ref_strength is ReferenceStrength.SOFT
         assert store.gc_runs() == []
     assert (tmp_path / "old.db.bak").exists()
-    # 重开幂等，不能破坏数据。
+    # Reopening is idempotent and must not corrupt the data.
     with Store(db) as store:
         assert store.schema_version == 4
         assert store.get_task(1, record_view=False).title == "旧任务"
@@ -156,7 +156,7 @@ def test_new_cli_commands_and_gc_stats(tmp_path, capsys):
     output = capsys.readouterr().out
     assert "Renamed [strong]" in output and "consecutive_skips" in output and "edit" in output
 
-    # 两个 strong 可达对象，无候选；真正 gc 会写审计，dry-run 不会。
+    # Two strong reachable objects, no candidates; a real gc writes an audit record, dry-run doesn't.
     assert main(["--db", db, "gc"]) == 0
     with Store(db) as store:
         assert len(store.gc_runs()) == 1

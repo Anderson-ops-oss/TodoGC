@@ -1,4 +1,5 @@
-# cli.py —— 命令行入口：把录入/标记/依赖/GC 全链路串起来，核心是 Stop-the-world 回收仪式(复活或了断)。
+# cli.py — the command-line entry point: strings together the add/mark/dep/GC pipeline, with
+# the Stop-the-world collection ceremony (revive or let go) at its core.
 
 from __future__ import annotations
 
@@ -21,19 +22,19 @@ from todogc.i18n import t as _t
 from todogc.store import Store
 from todogc.watcher import Watcher
 
-HEAP_MAX = 50  # -Xmx：你能同时扛的任务数上限，仅用于 GC 日志展示。
+HEAP_MAX = 50  # -Xmx: the max number of tasks you can carry at once, used only for GC log display.
 
 
-# ============ 回收仪式(可测核心) ============
+# ============ Collection ceremony (the testable core) ============
 
 @dataclass
 class CeremonyOutcome:
-    """一次 Stop-the-world 仪式的处置结果。
+    """The outcome of one Stop-the-world ceremony.
 
     Attributes:
-        revived (list[int]): 被复活的任务 id。
-        collected (list[int]): 被回收的任务 id。
-        skipped (list[int]): 被跳过(暂缓处置)的任务 id。
+        revived (list[int]): ids of revived tasks.
+        collected (list[int]): ids of collected tasks.
+        skipped (list[int]): ids of skipped (deferred) tasks.
     """
 
     revived: list[int] = field(default_factory=list)
@@ -42,16 +43,17 @@ class CeremonyOutcome:
 
 
 def _finalize_spent(store: Store, task_id: int) -> bool:
-    """判断某任务的 finalize() 是否已用掉(此前复活过一次)。
+    """Determine whether a task's finalize() has already been used up (it was revived once before).
 
-    对应 JVM 规则：对象只调用一次 finalize，复活过的下次回收不再触发。
+    Mirrors the JVM rule: an object's finalize() is called at most once; once revived, the
+    next collection no longer triggers it.
 
     Args:
-        store (Store): 数据源。
-        task_id (int): 任务 id。
+        store (Store): the data source.
+        task_id (int): the task id.
 
     Returns:
-        bool: 触碰历史里出现过 REVIVE 则为 True。
+        bool: True if REVIVE appears in its touch history.
     """
     return any(t.kind is TouchKind.REVIVE for t in store.touches(task_id))
 
@@ -65,22 +67,26 @@ def run_ceremony(
     revive_root: Callable[[Candidate], int | None] | int | None = None,
     now: datetime | None = None,
 ) -> CeremonyOutcome:
-    """对候选清单逐个执行处置：复活 / 回收 / 跳过(仪式的纯逻辑核心，与交互解耦)。
+    """Execute a decision for each candidate in the listing: revive / collect / skip (the ceremony's pure-logic core, decoupled from interaction).
 
-    回收时若该任务从未复活过，先调 finalize() 收集遗言；复活过的直接清并盖章
-    "finalize() already called"。复活会 age +1(熬过一轮)并按需重连 root。
+    On collect, if the task has never been revived before, calls finalize() to collect a
+    eulogy first; if it has, just clears it and stamps "finalize() already called". Revive
+    bumps age +1 (survived a round) and re-links the root if needed.
 
     Args:
-        store (Store): 数据源，会被本方法写入。
-        result (GCResult): 待处置的 GC 结果。
-        decide (Callable[[Candidate], str]): 处置决策，返回 "revive" / "collect" / "skip"。
-        eulogize (Callable[[Candidate], str] | None): 收集遗言的回调；None 则沉默回收。
-        revive_root (Callable[[Candidate], int | None] | int | None): 复活时若任务未关联
-            root，用它取要重连的 root id；可传固定 int 或回调，None 表示不重连。
-        now (datetime | None): 事件时间基准；None 用当前 UTC。
+        store (Store): the data source; this method writes to it.
+        result (GCResult): the GC result to process.
+        decide (Callable[[Candidate], str]): the disposition decision, returning "revive" /
+            "collect" / "skip".
+        eulogize (Callable[[Candidate], str] | None): callback that collects the eulogy;
+            None means a silent collection.
+        revive_root (Callable[[Candidate], int | None] | int | None): on revive, if the task
+            has no root, used to get the root id to re-link to; can be a fixed int or a
+            callback, None means no re-link.
+        now (datetime | None): the event time base; None uses the current UTC time.
 
     Returns:
-        CeremonyOutcome: 各处置分类的 id 列表。
+        CeremonyOutcome: id lists for each disposition category.
     """
     now = now or datetime.now(timezone.utc)
     out = CeremonyOutcome()
@@ -104,7 +110,7 @@ def run_ceremony(
                 if r is not None:
                     store.link(task.id, r, ts=now)
                     task.root_id = r
-            survivor = task.aged()  # 熬过一轮：age +1，分代相应晋升
+            survivor = task.aged()  # survived a round: age +1, generation promoted accordingly
             survivor.state = State.LIVE
             store.update_task(survivor)
             store.record(task.id, TouchKind.REVIVE, ts=now)
@@ -114,30 +120,31 @@ def run_ceremony(
     return out
 
 
-# ============ 子命令 ============
+# ============ Subcommands ============
 
 def _run_gc(store: Store, now: datetime, policy: GCPolicy | None = None) -> GCResult:
-    """构建引用图并跑一次标记-清除(add 的 OOM 检查与 gc 命令共用)。
+    """Build the reference graph and run one mark-and-sweep (shared by add's OOM check and the gc command).
 
     Args:
-        store (Store): 数据源。
-        now (datetime): 判活时间基准。
+        store (Store): the data source.
+        now (datetime): the liveness time base.
 
     Returns:
-        GCResult: 本轮 GC 结果。
+        GCResult: this round's GC result.
     """
     return Collector(policy).run_on_store(store, store.root_ids(), extra_edges=store.deps(), now=now)
 
 
 def cmd_add(store: Store, args: argparse.Namespace) -> int:
-    """add：录入(分配)一个任务；活跃堆(不含 Metaspace)满时触发 Allocation Failure，先逼你回收。
+    """add: record (allocate) a task; triggers Allocation Failure when the active heap (excluding Metaspace) is full, forcing a reclaim first.
 
     Args:
-        store (Store): 数据源。
-        args (argparse.Namespace): 需含 title / root_id / root / meta / force / heap_max。
+        store (Store): the data source.
+        args (argparse.Namespace): needs title / root_id / root / meta / force / heap_max.
 
     Returns:
-        int: 退出码；堆满且非元任务、未 --force 时返回 1(拒绝分配)。
+        int: exit code; returns 1 (allocation refused) when the heap is full, it's not a
+            meta-task, and --force wasn't given.
     """
     size = store.heap_size()
     if not args.force and not args.meta and size >= args.heap_max:
@@ -170,14 +177,14 @@ def cmd_add(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_root(store: Store, args: argparse.Namespace) -> int:
-    """root：把任务标记 / 取消标记为活跃 GC root。
+    """root: mark / unmark a task as an active GC root.
 
     Args:
-        store (Store): 数据源。
-        args (argparse.Namespace): 需含 id / off。
+        store (Store): the data source.
+        args (argparse.Namespace): needs id / off.
 
     Returns:
-        int: 退出码。
+        int: exit code.
     """
     try:
         store.set_root(args.id, not args.off)
@@ -189,14 +196,14 @@ def cmd_root(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_dep(store: Store, args: argparse.Namespace) -> int:
-    """dep：新增 / 删除一条"理由"边(task 的理由是 ref)。
+    """dep: add / remove a "reason" edge (a task's reason is its ref).
 
     Args:
-        store (Store): 数据源。
-        args (argparse.Namespace): 需含 task_id / ref_id / remove。
+        store (Store): the data source.
+        args (argparse.Namespace): needs task_id / ref_id / remove.
 
     Returns:
-        int: 退出码；自环等非法输入返回 1。
+        int: exit code; returns 1 for invalid input such as a self-loop.
     """
     try:
         if args.remove:
@@ -212,14 +219,14 @@ def cmd_dep(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_ls(store: Store, args: argparse.Namespace) -> int:
-    """ls：列出任务(会记 view 埋点)，标出分代 / 年龄 / root / 关联 / 状态。
+    """ls: list tasks (records a view event), marking generation / age / root / link / state.
 
     Args:
-        store (Store): 数据源。
-        args (argparse.Namespace): 需含 state。
+        store (Store): the data source.
+        args (argparse.Namespace): needs state.
 
     Returns:
-        int: 退出码。
+        int: exit code.
     """
     if args.state == State.CANDIDATE.value:
         result = _run_gc(store, datetime.now(timezone.utc), args.gc_policy)
@@ -228,7 +235,7 @@ def cmd_ls(store: Store, args: argparse.Namespace) -> int:
         state = State(args.state) if args.state else None
         tasks = store.list_tasks(state=state)
     roots = store.root_ids()
-    if console.render_ls(tasks, roots):  # 装了 rich → 彩色表格
+    if console.render_ls(tasks, roots):  # rich installed -> color table
         return 0
     if not tasks:
         print(_t("cli.ls.empty_heap"))
@@ -242,14 +249,14 @@ def cmd_ls(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_progress(store: Store, args: argparse.Namespace) -> int:
-    """progress：记一次真推进(计入 refcount)。
+    """progress: log one bit of real progress (counted toward refcount).
 
     Args:
-        store (Store): 数据源。
-        args (argparse.Namespace): 需含 id / note。
+        store (Store): the data source.
+        args (argparse.Namespace): needs id / note.
 
     Returns:
-        int: 退出码。
+        int: exit code.
     """
     if store.get_task(args.id, record_view=False) is None:
         print(_t("cli.error.not_found", id=args.id), file=sys.stderr)
@@ -264,14 +271,14 @@ def cmd_progress(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_snooze(store: Store, args: argparse.Namespace) -> int:
-    """snooze：推迟一个任务(喂 skip_count)。
+    """snooze: defer a task (feeds skip_count).
 
     Args:
-        store (Store): 数据源。
-        args (argparse.Namespace): 需含 id / note。
+        store (Store): the data source.
+        args (argparse.Namespace): needs id / note.
 
     Returns:
-        int: 退出码。
+        int: exit code.
     """
     if store.get_task(args.id, record_view=False) is None:
         print(_t("cli.error.not_found", id=args.id), file=sys.stderr)
@@ -286,14 +293,14 @@ def cmd_snooze(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_gc(store: Store, args: argparse.Namespace) -> int:
-    """gc：跑标记-清除，打 GC 日志与候选清单，再进 Stop-the-world 回收仪式。
+    """gc: run mark-and-sweep, print the GC log and candidate listing, then enter the Stop-the-world collection ceremony.
 
     Args:
-        store (Store): 数据源。
-        args (argparse.Namespace): 需含 full / dry_run。
+        store (Store): the data source.
+        args (argparse.Namespace): needs full / dry_run.
 
     Returns:
-        int: 退出码。
+        int: exit code.
     """
     now = datetime.now(timezone.utc)
     result = _run_gc(store, now, args.gc_policy)
@@ -307,7 +314,7 @@ def cmd_gc(store: Store, args: argparse.Namespace) -> int:
         + "\n\n"
         + report.format_candidates(result, views_of=store.view_count)
     )
-    if not console.print_text(body):  # 装了 rich → 关键词上色；否则纯文本
+    if not console.print_text(body):  # rich installed -> keyword highlighting; otherwise plain text
         print(body)
 
     if args.dry_run:
@@ -373,40 +380,44 @@ def cmd_gc(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_heap(store: Store, args: argparse.Namespace) -> int:
-    """heap(别名 jmap)：打印分代堆内存图——各代对象分布、-Xmx 占用、僵尸(☠)标红。
+    """heap (alias jmap): print the generational heap map — per-generation object distribution, -Xmx usage, zombies (☠) marked red.
 
-    只读诊断快照：跑一次标记-清除拿到判定，但不进回收仪式、不写库，也不记 view 埋点
-    (复用 GC 扫描的 record_view=False 口径，避免每次看堆图都虚增查看次数)。
+    A read-only diagnostic snapshot: runs one mark-and-sweep to get the judgment, but never
+    enters the collection ceremony, never writes to the store, and never records a view event
+    (reuses the GC scan's record_view=False accounting, so looking at the heap map never
+    inflates view counts).
 
     Args:
-        store (Store): 数据源。
-        args (argparse.Namespace): 需含 heap_max。
+        store (Store): the data source.
+        args (argparse.Namespace): needs heap_max.
 
     Returns:
-        int: 退出码(恒 0)。
+        int: exit code (always 0).
     """
     now = datetime.now(timezone.utc)
     result = _run_gc(store, now, args.gc_policy)
     body = report.format_heap_map(result, store.root_ids(), heap_max=args.heap_max)
-    if not console.print_text(body):  # 装了 rich → 僵尸标红/★描金/填充条上色；否则纯文本
+    if not console.print_text(body):  # rich installed -> zombies red/★ gold/fill bar colored; otherwise plain text
         print(body)
     return 0
 
 
 def cmd_web(store: Store, args: argparse.Namespace) -> int:
-    """web：启动 Streamlit Web 端(浏览器里的堆内存图 + add/gc/restore 交互)。
+    """web: launch the Streamlit Web UI (the heap map in the browser + add/gc/restore interactions).
 
-    以子进程运行 `python -m streamlit run webapp.py`，把当前 --db / --heap-max 通过
-    环境变量(TODOGC_DB / TODOGC_HEAP_MAX)透传给 Web 端，确保它和 CLI 用同一个库。
-    未安装 streamlit 时只给安装提示、绝不抛栈。本命令不使用 store(仅需路径参数)，
-    store 由 main() 统一开关，这里忽略。
+    Runs `python -m streamlit run webapp.py` as a subprocess, passing the current --db /
+    --heap-max through via environment variables (TODOGC_DB / TODOGC_HEAP_MAX) so it uses the
+    same database as the CLI. Just prints an install hint and never raises if streamlit isn't
+    installed. This command doesn't use store (it only needs the path argument); store is
+    opened uniformly by main() and ignored here.
 
     Args:
-        store (Store): 数据源(本命令不用，仅为子命令签名统一)。
-        args (argparse.Namespace): 需含 db / heap_max / port。
+        store (Store): the data source (unused by this command; present only to keep the
+            subcommand signature uniform).
+        args (argparse.Namespace): needs db / heap_max / port.
 
     Returns:
-        int: streamlit 子进程的退出码；未安装 streamlit 时返回 1。
+        int: the streamlit subprocess's exit code; returns 1 if streamlit isn't installed.
     """
     if importlib.util.find_spec("streamlit") is None:
         print(_t("cli.web.not_installed"), file=sys.stderr)
@@ -430,18 +441,22 @@ def cmd_web(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_watch(store: Store, args: argparse.Namespace) -> int:
-    """watch：定时体检 —— 轮询判活，状态跃迁/心跳摘要/堆占用告警时推送 ntfy 通知。
+    """watch: scheduled checkup — polls liveness, pushes an ntfy notification on state transitions/heartbeat digests/heap-usage alerts.
 
-    Watcher 自己开一条独立的 Store 连接跑循环(与 main() 统一开的 store 无关，同 cmd_web
-    对待 store 参数的方式)。Ctrl-C(SIGINT)或 SIGTERM 都会让循环在下一个心跳片(≤30s)
-    结束后优雅退出并释放单实例锁。
+    The Watcher opens its own independent Store connection to run its loop (unrelated to the
+    store main() opens uniformly, same treatment of the store argument as cmd_web). Ctrl-C
+    (SIGINT) or SIGTERM both make the loop exit gracefully and release the single-instance
+    lock after the next heartbeat tick (<=30s).
 
     Args:
-        store (Store): 数据源(本命令不用，仅为子命令签名统一)。
-        args (argparse.Namespace): 需含 db 与 app_config(main() 里加载的完整 AppConfig)。
+        store (Store): the data source (unused by this command; present only to keep the
+            subcommand signature uniform).
+        args (argparse.Namespace): needs db and app_config (the full AppConfig loaded in
+            main()).
 
     Returns:
-        int: 退出码；notify.ntfy_enabled 未开启/未配置 ntfy_topic 时返回 1。
+        int: exit code; returns 1 if notify.ntfy_enabled isn't on / ntfy_topic isn't
+            configured.
     """
     cfg: AppConfig = args.app_config
     if not cfg.ntfy_enabled:
@@ -459,14 +474,14 @@ def cmd_watch(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_graveyard(store: Store, args: argparse.Namespace) -> int:
-    """graveyard：悼词墙，列出已回收任务的墓志铭与遗言。
+    """graveyard: the epitaph wall, listing epitaphs and eulogies for collected tasks.
 
     Args:
-        store (Store): 数据源。
-        args (argparse.Namespace): 无额外字段。
+        store (Store): the data source.
+        args (argparse.Namespace): no extra fields.
 
     Returns:
-        int: 退出码。
+        int: exit code.
     """
     dead = store.list_tasks(state=State.COLLECTED, record_view=False)
     if not dead:
@@ -491,14 +506,14 @@ def cmd_graveyard(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_restore(store: Store, args: argparse.Namespace) -> int:
-    """restore：把某任务从垃圾桶恢复为存活(防手滑)。
+    """restore: restore a task from the trash back to live (a safety net for slip-ups).
 
     Args:
-        store (Store): 数据源。
-        args (argparse.Namespace): 需含 id。
+        store (Store): the data source.
+        args (argparse.Namespace): needs id.
 
     Returns:
-        int: 退出码；任务不存在返回 1。
+        int: exit code; returns 1 if the task doesn't exist.
     """
     t = store.get_task(args.id, record_view=False)
     if t is None:
@@ -526,7 +541,7 @@ def cmd_restore(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_show(store: Store, args: argparse.Namespace) -> int:
-    """显示任务详情和关键指标，不写 VIEW 事件。"""
+    """Show task details and key metrics; does not write a VIEW event."""
     task = store.get_task(args.id, record_view=False)
     if task is None:
         print(_t("cli.error.not_found", id=args.id), file=sys.stderr)
@@ -550,7 +565,7 @@ def cmd_show(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_history(store: Store, args: argparse.Namespace) -> int:
-    """打印 append-only 事件时间线。"""
+    """Print the append-only event timeline."""
     if store.get_task(args.id, record_view=False) is None:
         print(_t("cli.error.not_found", id=args.id), file=sys.stderr)
         return 1
@@ -564,7 +579,7 @@ def cmd_history(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_edit(store: Store, args: argparse.Namespace) -> int:
-    """编辑任务标题/引用强度。"""
+    """Edit a task's title/reference strength."""
     if args.title is None and args.ref_strength is None:
         print(_t("cli.edit.needs_field"), file=sys.stderr)
         return 1
@@ -578,7 +593,7 @@ def cmd_edit(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_link(store: Store, args: argparse.Namespace) -> int:
-    """建立或解除父/目标关联。"""
+    """Link or unlink a parent/target association."""
     try:
         if args.off:
             store.unlink(args.id)
@@ -595,7 +610,7 @@ def cmd_link(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_doctor(store: Store, args: argparse.Namespace) -> int:
-    """扫描认知内存泄漏。"""
+    """Scan for cognitive memory leaks."""
     now = datetime.now(timezone.utc)
     result = _run_gc(store, now, args.gc_policy)
     print(report.format_doctor(store, result, now=now))
@@ -603,7 +618,7 @@ def cmd_doctor(store: Store, args: argparse.Namespace) -> int:
 
 
 def _days(value: str) -> int:
-    """解析 stats 的 ``30d`` 或纯整数天数。"""
+    """Parse stats' ``30d`` form or a plain integer day count."""
     raw = value[:-1] if value.lower().endswith("d") else value
     try:
         days = int(raw)
@@ -615,7 +630,7 @@ def _days(value: str) -> int:
 
 
 def _positive_int(value: str) -> int:
-    """argparse 正整数类型。"""
+    """argparse type for a positive integer."""
     try:
         number = int(value)
     except ValueError as exc:
@@ -626,18 +641,18 @@ def _positive_int(value: str) -> int:
 
 
 def cmd_stats(store: Store, args: argparse.Namespace) -> int:
-    """显示已执行 GC 的聚合统计。"""
+    """Show aggregated stats for executed GCs."""
     print(report.format_stats(store.gc_runs(since_days=args.since)))
     return 0
 
 
-# ============ 组装与入口 ============
+# ============ Assembly and entry point ============
 
 def build_parser() -> argparse.ArgumentParser:
-    """构造带全部子命令的 argparse 解析器。
+    """Build the argparse parser with all subcommands wired up.
 
     Returns:
-        argparse.ArgumentParser: 已挂好子命令与 func 默认值的解析器。
+        argparse.ArgumentParser: a parser with subcommands and their func defaults attached.
     """
     parser = argparse.ArgumentParser(prog="todogc", description=_t("cli.help.description"))
     parser.add_argument("--db", default=os.environ.get("TODOGC_DB", "todogc.db"), help=_t("cli.help.db"))
@@ -747,19 +762,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _prescan_lang(argv: list[str], environ: Mapping[str, str]) -> str:
-    """在构建 parser 前先找出 --lang(argparse 自身的 help 文案要用哪种语言)。
+    """Find --lang before the parser is built (which language argparse's own help text should use).
 
-    不读配置文件里的 [i18n].lang —— 那需要先解析 --config，在这一步做不到，只能
-    等 main() 里 load_config() 兜底(意味着"仅在配置文件里设置语言、不传 --lang/
-    环境变量"时，--help 本身的文案仍是默认语言，但命令实际执行的输出会是配置里
-    指定的语言)。
+    Doesn't read [i18n].lang from the config file — that needs --config parsed first, which
+    isn't possible at this stage, so it's left to load_config() in main() as a fallback
+    (meaning: if the language is set only in the config file, with no --lang / env var, --help
+    itself still shows in the default language, but the command's actual output uses the
+    language specified in the config).
 
     Args:
-        argv (list[str]): 原始参数列表(build_parser() 之前)。
-        environ (dict[str, str]): 环境变量。
+        argv (list[str]): the raw argument list (before build_parser()).
+        environ (dict[str, str]): environment variables.
 
     Returns:
-        str: 探测到的语言代码；未探测到合法值时为 DEFAULT_LOCALE。
+        str: the detected language code; DEFAULT_LOCALE if nothing valid was detected.
     """
     for i, token in enumerate(argv):
         if token == "--lang" and i + 1 < len(argv):
@@ -770,13 +786,13 @@ def _prescan_lang(argv: list[str], environ: Mapping[str, str]) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI 主入口：解析参数、打开 store、分发到子命令。
+    """CLI main entry point: parses arguments, opens the store, dispatches to a subcommand.
 
     Args:
-        argv (list[str] | None): 参数列表；None 时用 sys.argv[1:]。
+        argv (list[str] | None): the argument list; uses sys.argv[1:] if None.
 
     Returns:
-        int: 进程退出码。
+        int: the process exit code.
     """
     argv = list(sys.argv[1:] if argv is None else argv)
     prelim_lang = _prescan_lang(argv, os.environ)
@@ -786,7 +802,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         cfg = load_config(args.config)
-        set_locale(args.lang or cfg.lang)  # --lang > 环境变量/配置文件(已内含在 cfg.lang 里) > 默认
+        set_locale(args.lang or cfg.lang)  # --lang > env var/config file (already folded into cfg.lang) > default
         args.heap_max = args.heap_max if args.heap_max is not None else cfg.heap_max
         mode = getattr(args, "command_gc_mode", None) or args.gc_mode or cfg.gc_mode
         recent_days = args.recent_days if args.recent_days is not None else cfg.recent_days
@@ -798,7 +814,7 @@ def main(argv: list[str] | None = None) -> int:
             max_skips=max_skips,
             restore_grace_days=grace,
         )
-        args.app_config = cfg  # 完整配置(含 notify.*/watch.*)，watch 子命令要用；其余命令忽略。
+        args.app_config = cfg  # the full config (including notify.*/watch.*); needed by the watch subcommand, ignored by the rest.
     except (ConfigError, ValueError) as exc:
         print(_t("cli.error.config", error=exc), file=sys.stderr)
         return 2

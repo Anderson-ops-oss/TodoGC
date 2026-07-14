@@ -1,4 +1,4 @@
-# test_heap.py —— 领域模型：分代阈值、refcount 口径、Task 默认值与 aged() 值语义。
+# test_heap.py — the domain model: generation thresholds, refcount accounting, Task defaults, and aged()'s value semantics.
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from todogc.heap import TENURING_THRESHOLD, Generation, State, Task, Touch, Touc
 
 
 def test_for_age_boundaries():
-    """分代随年龄晋升，阈值锁定在 15(4-bit 对象头)。"""
+    """Generation is promoted by age, with the threshold locked at 15 (4-bit object header)."""
     assert TENURING_THRESHOLD == 15
     assert Generation.for_age(0) is Generation.EDEN
     assert Generation.for_age(1) is Generation.SURVIVOR
@@ -19,24 +19,24 @@ def test_for_age_boundaries():
 
 
 def test_is_progress():
-    """只有 PROGRESS/EDIT 计入真推进，反复 VIEW / DEFER 不算。"""
+    """Only PROGRESS/EDIT count as real progress; repeated VIEW / DEFER don't."""
     assert TouchKind.PROGRESS.is_progress and TouchKind.EDIT.is_progress
     assert not TouchKind.VIEW.is_progress and not TouchKind.DEFER.is_progress
     assert Touch(1, TouchKind.VIEW, datetime.now(timezone.utc)).is_progress is False
 
 
 def test_task_defaults_and_aged():
-    """默认未关联/EDEN/LIVE；aged() 返回新对象且不改原对象。"""
+    """Defaults to unlinked/EDEN/LIVE; aged() returns a new object and doesn't modify the original."""
     t = Task(title="学吉他")
     assert t.is_unlinked and t.gen is Generation.EDEN and t.state is State.LIVE
-    with pytest.raises(ValueError, match="尚未落库"):
+    with pytest.raises(ValueError, match="not been persisted"):
         _ = t.persisted_id
     t2 = t.aged()
     assert t2.age == 1 and t2.gen is Generation.SURVIVOR
-    assert t.age == 0  # 值语义：原对象不被就地修改
+    assert t.age == 0  # value semantics: the original object is never mutated in place
 
 
 def test_meta_not_promoted():
-    """元任务不参与常规晋升。"""
+    """Meta-tasks don't participate in regular promotion."""
     m = Task(title="变得更自律", gen=Generation.META)
     assert m.is_meta and m.aged().gen is Generation.META

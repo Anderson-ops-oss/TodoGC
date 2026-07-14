@@ -1,7 +1,10 @@
-# watcher.py —— 定时体检核心：轮询判活，跟上一轮 diff 出"状态跃迁"才推送(不是心跳污染)，
-# 心跳粒度独立于轮询间隔(见 _HEARTBEAT_SECONDS)，单实例建议性锁防 CLI watch 与 Web 内置
-# watcher 同时跑、对同一份跃迁重复推送。CLI 的 `todogc watch` 与 webapp.py 共用同一份逻辑，
-# 只是谁在什么线程里调用 Watcher.run() 的区别。
+# watcher.py — the scheduled-checkup core: polls liveness, only pushes when a diff against
+# the previous round finds a "state transition" (never on heartbeat noise). Heartbeat
+# granularity is decoupled from the poll interval (see _HEARTBEAT_SECONDS); the
+# single-instance advisory lock prevents CLI watch and the Web UI's built-in watcher from
+# running at once and double-pushing the same transition. The CLI's `todogc watch` and
+# webapp.py share this exact logic — the only difference is which thread calls
+# Watcher.run().
 
 from __future__ import annotations
 
@@ -19,23 +22,27 @@ from todogc.store import Store
 
 logger = logging.getLogger(__name__)
 
-# 心跳/可中断休眠的粒度，与用户可配的 watch_poll_seconds 解耦：如果心跳只在每次真正
-# 轮询时才刷新，一个刚睡下、还没到下一次 poll 的存活 watcher 会被 watch_lock_stale_seconds
-# 误判为"进程已死"。心跳按这个小粒度独立刷新，poll_seconds 只决定多久做一次真正的判活。
+# The granularity of the heartbeat/interruptible sleep, decoupled from the user-configurable
+# watch_poll_seconds: if the heartbeat only refreshed on each real poll, a live watcher that
+# just went to sleep and hasn't reached its next poll yet would be wrongly judged "dead" by
+# watch_lock_stale_seconds. The heartbeat refreshes independently at this small granularity;
+# poll_seconds only decides how often a real liveness check actually runs.
 _HEARTBEAT_SECONDS = 30
 
 
 def _status_of(candidate: Candidate) -> str:
-    """把一条候选归一成"状态串"，用于跨轮 diff。
+    """Normalize a candidate into a "status string", for diffing across rounds.
 
-    STALE/UNREACHABLE 直接用 reason 值；CYCLE 额外带上环号——同为"陷入循环引用"，
-    但换了个环搭子(cycle_id 变了)在语义上是一次新的跃迁，值得再推一次。
+    STALE/UNREACHABLE use the reason value directly; CYCLE additionally carries the cycle
+    number — being "stuck in a reference cycle" is the same reason, but swapping to a
+    different cycle buddy (cycle_id changed) is semantically a new transition, worth pushing
+    again.
 
     Args:
-        candidate (Candidate): 一条回收候选。
+        candidate (Candidate): a reclaim candidate.
 
     Returns:
-        str: 归一化状态串。
+        str: the normalized status string.
     """
     if candidate.reason is Reason.CYCLE:
         return f"cycle:{candidate.cycle_id}"
@@ -43,7 +50,7 @@ def _status_of(candidate: Candidate) -> str:
 
 
 def _policy_from_config(config: AppConfig) -> GCPolicy:
-    """把 AppConfig 的 gc.* 字段映射成 GCPolicy(watch 场景没有 CLI 参数覆盖，直接照抄配置)。"""
+    """Map AppConfig's gc.* fields to a GCPolicy (the watch scenario has no CLI argument overrides, so the config is copied as-is)."""
     return GCPolicy(
         mode=config.gc_mode,
         recent_days=config.recent_days,
@@ -54,13 +61,15 @@ def _policy_from_config(config: AppConfig) -> GCPolicy:
 
 @dataclass
 class TickEvent:
-    """一次 tick 里判定为"值得推送"的一条候选跃迁。
+    """A candidate transition judged "worth pushing" within one tick.
 
     Attributes:
-        task_id (int): 任务 id。
-        title (str): 任务标题。
-        status (str): 本轮归一化状态串(供消息里挑图标用)。
-        detail (str): 人话解释，直接复用 collector.Candidate.detail，不重复造文案。
+        task_id (int): the task id.
+        title (str): the task title.
+        status (str): this round's normalized status string (used to pick the message's
+            icon).
+        detail (str): a human-readable explanation, reusing collector.Candidate.detail
+            directly rather than composing new copy.
     """
 
     task_id: int
@@ -71,14 +80,17 @@ class TickEvent:
 
 @dataclass
 class TickResult:
-    """一次 watch tick 的产出：算出来了什么、有没有值得推送的东西。
+    """The output of one watch tick: what was computed, and whether there's anything worth pushing.
 
     Attributes:
-        events (list[TickEvent]): 本轮触发的状态跃迁(新候选 / 新循环 / 复议期到)。
-        candidate_count (int): 本轮回收候选总数(含未触发事件的老候选)，供心跳摘要用。
-        heap_size (int): 当前活跃堆占用。
-        heap_max (int): -Xmx 上限。
-        heap_alarm (bool): 堆占用是否本轮新跨过阈值(边沿触发，不是"持续高位"每轮都报)。
+        events (list[TickEvent]): state transitions triggered this round (new candidate /
+            new cycle / reminder period reached).
+        candidate_count (int): total reclaim candidates this round (including old candidates
+            that didn't trigger an event), used for the heartbeat digest.
+        heap_size (int): current active heap usage.
+        heap_max (int): the -Xmx cap.
+        heap_alarm (bool): whether heap usage newly crossed the threshold this round
+            (edge-triggered, not reported every round while "persistently high").
     """
 
     events: list[TickEvent] = field(default_factory=list)
@@ -89,29 +101,36 @@ class TickResult:
 
     @property
     def heap_pct(self) -> int:
-        """堆占用百分比(四舍五入)；heap_max <= 0 时视为 0。"""
+        """Heap usage percentage (rounded); treated as 0 when heap_max <= 0."""
         return 0 if self.heap_max <= 0 else round(100 * self.heap_size / self.heap_max)
 
 
 def run_tick(store: Store, config: AppConfig, *, now: datetime | None = None) -> TickResult:
-    """跑一次判活，跟上一轮 watch 状态 diff，把本轮状态落库，返回需要推送的内容。
+    """Run one liveness check, diff it against the previous watch state, persist this round's state, and return what's worth pushing.
 
-    只负责"算"和"落库"，不碰网络，发不发、怎么发是 Watcher 的事，这样纯逻辑可以脱离
-    ntfy 单独测试。
+    Only responsible for "computing" and "persisting" — never touches the network; whether
+    and how to push is the Watcher's job, so this pure logic can be tested independently of
+    ntfy.
 
-    去抖规则：
-      - 任务从 alive(或从未被 watch 观测过)跃迁到候选 → 新事件。
-      - 候选状态本身发生变化(如 stale → cycle，或换了个环搭子)→ 也算新事件。
-      - 状态没变，但距上次为它推过事件已超过 config.watch_remind_days → 复议期到，再推一次。
-      - 候选变回 alive → 静默重置去抖记录，不推送(这是好消息，且这样它下次再堕落会被当"新"跃迁)。
+    Debounce rules:
+      - A task transitioning from alive (or never observed by watch before) to a candidate
+        -> a new event.
+      - The candidate's status itself changing (e.g. stale -> cycle, or switching to a
+        different cycle buddy) -> also a new event.
+      - Status unchanged, but it's been longer than config.watch_remind_days since an event
+        was last pushed for it -> the reminder period is reached, push again.
+      - A candidate reverting to alive -> silently resets the debounce record, no push (this
+        is good news, and it means the next time it backslides it's treated as a "new"
+        transition).
 
     Args:
-        store (Store): 数据源。
-        config (AppConfig): 含判活口径(gc.*)与体检节奏(watch.*)。
-        now (datetime | None): 时间基准；None 用当前 UTC。
+        store (Store): the data source.
+        config (AppConfig): contains the liveness thresholds (gc.*) and checkup cadence
+            (watch.*).
+        now (datetime | None): the time base; None uses the current UTC time.
 
     Returns:
-        TickResult: 本轮判活与去抖判定的结果。
+        TickResult: this round's liveness and debounce judgment.
     """
     now = now or datetime.now(timezone.utc)
     result = Collector(_policy_from_config(config), lang=config.lang).run_on_store(
@@ -164,7 +183,7 @@ def run_tick(store: Store, config: AppConfig, *, now: datetime | None = None) ->
 
 
 def _event_message(result: TickResult, *, lang: str) -> tuple[str, str]:
-    """把本轮触发的事件汇总成一条推送(多条跃迁合并成一条，不逐条刷屏)。"""
+    """Roll this round's triggered events up into a single push (multiple transitions merged into one, not spammed one at a time)."""
     lines = []
     for event in result.events:
         icon = "🔗" if event.status.startswith("cycle:") else "🆕"
@@ -189,7 +208,7 @@ def _event_message(result: TickResult, *, lang: str) -> tuple[str, str]:
 
 
 def _heap_alarm_message(result: TickResult, *, lang: str) -> tuple[str, str]:
-    """堆占用新跨过阈值的告警(边沿触发)。"""
+    """Alert for heap usage newly crossing the threshold (edge-triggered)."""
     title = t("watcher.push.heap_alarm.title", lang=lang)
     body = t(
         "watcher.push.heap_alarm.body", lang=lang, size=result.heap_size, max=result.heap_max, pct=result.heap_pct
@@ -198,7 +217,7 @@ def _heap_alarm_message(result: TickResult, *, lang: str) -> tuple[str, str]:
 
 
 def _digest_message(result: TickResult, *, lang: str) -> tuple[str, str]:
-    """定时心跳摘要(不管这轮有没有新事件都可能发，证明 watcher 还活着)。"""
+    """The scheduled heartbeat digest (may be sent whether or not there's a new event this round, to prove the watcher is still alive)."""
     title = t("watcher.push.digest.title", lang=lang)
     body = t(
         "watcher.push.digest.body",
@@ -212,24 +231,26 @@ def _digest_message(result: TickResult, *, lang: str) -> tuple[str, str]:
 
 
 class Watcher:
-    """定时体检的执行体：poll → tick → (去抖判定后)推送 → 睡到下一次 poll，循环往复。
+    """The scheduled checkup's execution body: poll -> tick -> (after debounce judgment) push -> sleep until the next poll, and repeat.
 
-    `run()` 阻塞当前线程直至 `stop()` 被调用。CLI 的 `todogc watch` 在主线程直接跑；
-    Web 端把它丢进一条 daemon 线程(见 webapp.py 的 st.cache_resource 包装)。
+    `run()` blocks the current thread until `stop()` is called. The CLI's `todogc watch` runs
+    it directly on the main thread; the Web UI drops it into a daemon thread (see webapp.py's
+    st.cache_resource wrapper).
     """
 
     def __init__(self, db_path: str, config: AppConfig) -> None:
-        """构造一个 watcher。
+        """Construct a watcher.
 
         Args:
-            db_path (str): 要体检的数据库路径。
-            config (AppConfig): 含 notify.*/watch.* 配置；ntfy_enabled 必须为 True。
+            db_path (str): path to the database to check up on.
+            config (AppConfig): contains notify.*/watch.* config; ntfy_enabled must be True.
 
         Returns:
             None
 
         Raises:
-            ValueError: notify.ntfy_enabled 未开启时(调用方应在构造前自行检查，这里是兜底)。
+            ValueError: if notify.ntfy_enabled isn't turned on (the caller should check
+                this itself before construction; this is a backstop).
         """
         if not config.ntfy_enabled:
             raise ValueError(t("watcher.error.ntfy_disabled", lang=config.lang))
@@ -242,7 +263,7 @@ class Watcher:
         self._pid = os.getpid()
 
     def stop(self) -> None:
-        """请求循环在下一个心跳片结束后退出(不阻塞等待退出完成)。
+        """Request the loop to exit after the next heartbeat tick ends (doesn't block waiting for the exit to complete).
 
         Returns:
             None
@@ -250,9 +271,11 @@ class Watcher:
         self._stop.set()
 
     def run(self) -> None:
-        """阻塞运行体检循环，直至 stop() 被调用。
+        """Block and run the checkup loop until stop() is called.
 
-        启动时尝试拿单实例建议性锁；若另一个 watcher 心跳仍新鲜，直接返回(不占用/不重复推送)。
+        On startup, tries to acquire the single-instance advisory lock; if another watcher's
+        heartbeat is still fresh, returns immediately (doesn't take over, doesn't push
+        duplicates).
 
         Returns:
             None
@@ -264,7 +287,7 @@ class Watcher:
             if not store.try_acquire_watch_lock(self._pid, now, stale_after=stale_after):
                 logger.warning(t("watcher.lock.already_running", lang=self._config.lang))
                 return
-            elapsed = self._config.watch_poll_seconds  # 启动即跑一次，别等一个完整 poll 周期。
+            elapsed = self._config.watch_poll_seconds  # run once immediately at startup, don't wait a full poll cycle
             while not self._stop.is_set():
                 now = datetime.now(timezone.utc)
                 store.heartbeat_watch_lock(self._pid, now)
@@ -280,7 +303,7 @@ class Watcher:
             store.close()
 
     def _run_once(self, store: Store, now: datetime) -> None:
-        """跑一次 tick，把值得推送的部分发出去；推送失败只警告，不打断循环。"""
+        """Run one tick and send out whatever's worth pushing; a push failure only warns, it never breaks the loop."""
         result = run_tick(store, self._config, now=now)
         lang = self._config.lang
         if result.events:
@@ -292,14 +315,14 @@ class Watcher:
             store.watch_meta_set("last_digest_at", now.isoformat())
 
     def _digest_due(self, store: Store, now: datetime) -> bool:
-        """距上次心跳摘要是否已超过 config.watch_digest_seconds。"""
+        """Whether it's been longer than config.watch_digest_seconds since the last heartbeat digest."""
         raw = store.watch_meta_get("last_digest_at")
         if raw is None:
             return True
         return (now - datetime.fromisoformat(raw)).total_seconds() >= self._config.watch_digest_seconds
 
     def _safe_send(self, title: str, message: str, *, priority: int, tags: list[str]) -> None:
-        """推送一条消息；网络/服务端失败只打警告，绝不让通知拖垮体检循环。"""
+        """Send a push notification; a network/server failure only logs a warning, never lets a notification take down the checkup loop."""
         try:
             self._channel.send(title, message, priority=priority, tags=tags)
         except NotifyError as exc:

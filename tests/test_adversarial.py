@@ -1,4 +1,4 @@
-"""对抗测试：恶意/异常输入、深图、状态错乱与 HTML 注入。"""
+"""Adversarial tests: malicious/malformed input, deep graphs, state corruption, and HTML injection."""
 
 from __future__ import annotations
 

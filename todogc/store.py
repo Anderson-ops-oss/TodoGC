@@ -1,4 +1,6 @@
-# store.py —— 持久化层：用 SQLite 落地 Task 与 Touch；读取任务时自动埋点 view 事件，让"触碰历史"这份判活地基自己长出来。
+# store.py — the persistence layer: lands Task and Touch in SQLite; automatically tracks a
+# view event whenever a task is read, so the "touch history" that liveness is built on grows
+# on its own.
 
 from __future__ import annotations
 
@@ -11,10 +13,12 @@ from pathlib import Path
 from todogc.heap import Generation, ReferenceStrength, State, Task, Touch, TouchKind
 from todogc.i18n import t as _t
 
-# 计入 refcount 的事件类型值：复用 TouchKind.is_progress 这一单一口径，不在此重复定义。
+# Event type values counted toward refcount: reuses TouchKind.is_progress as the single
+# source of truth, not redefined here.
 _PROGRESS_KIND_VALUES: tuple[str, ...] = tuple(k.value for k in TouchKind if k.is_progress)
 
-# 建表语句。task = 堆对象；touch = append-only 的触碰事件流(判活的唯一真相来源)。
+# Table-creation statements. task = heap objects; touch = the append-only touch-event stream
+# (the single source of truth for liveness).
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS task (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,7 +39,8 @@ CREATE TABLE IF NOT EXISTS touch (
     note    TEXT
 );
 
--- task→task 的"理由"边：dep(task_id, ref_id) 表示 task_id 的理由/前置是 ref_id(即 task_id 引用 ref_id)。
+-- task->task "reason" edges: dep(task_id, ref_id) means task_id's reason/prerequisite is
+-- ref_id (i.e. task_id references ref_id).
 CREATE TABLE IF NOT EXISTS dep (
     task_id INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
     ref_id  INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
@@ -50,13 +55,15 @@ _SCHEMA_VERSION = 4
 
 @dataclass(frozen=True)
 class WatchState:
-    """某任务在上一轮 ``todogc watch`` tick 里的判定状态与去抖时间戳。
+    """A task's judged status and debounce timestamp from the previous ``todogc watch`` tick.
 
     Attributes:
-        task_id (int): 任务 id。
-        status (str): 上一轮判定状态("alive" 或 collector.Reason 的值)。
-        notified_at (datetime | None): 最近一次为该任务当前状态发过事件推送的时间；
-            None 表示该状态自出现以来还没推送过(或从未记录)。
+        task_id (int): the task id.
+        status (str): the previous round's judged status ("alive" or a collector.Reason
+            value).
+        notified_at (datetime | None): the last time an event push was sent for this task's
+            current status; None means this status hasn't been pushed since it appeared (or
+            was never recorded).
     """
 
     task_id: int
@@ -66,7 +73,7 @@ class WatchState:
 
 @dataclass(frozen=True)
 class GCRun:
-    """一次已实际执行的 GC 审计记录。"""
+    """An audit record for a GC that was actually executed."""
 
     id: int
     started_at: datetime
@@ -80,13 +87,14 @@ class GCRun:
 
 
 class Store:
-    """TodoGC 的持久化门面：包一层 SQLite，对外只暴露 Task / Touch 语义，隐藏 SQL 细节。"""
+    """TodoGC's persistence facade: wraps SQLite, exposing only Task / Touch semantics and hiding the SQL details."""
 
     def __init__(self, path: str | Path = ":memory:") -> None:
-        """打开(或新建)一个 TodoGC 数据库并建好表结构。
+        """Open (or create) a TodoGC database and set up its schema.
 
         Args:
-            path (str | Path): 数据库文件路径；默认 ":memory:" 用内存库(测试友好)。
+            path (str | Path): the database file path; defaults to ":memory:" for an
+                in-memory database (test-friendly).
 
         Returns:
             None
@@ -98,31 +106,31 @@ class Store:
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._init_schema(existed=existed)
 
-    # ---- 资源管理 ----
+    # ---- resource management ----
 
     def __enter__(self) -> Store:
-        """进入 with 上下文。
+        """Enter the with-context.
 
         Returns:
-            Store: 自身，供 with ... as store 使用。
+            Store: self, for use as with ... as store.
         """
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        """退出 with 上下文时提交并关闭连接。
+        """Commit and close the connection when exiting the with-context.
 
         Args:
-            exc_type (object): 异常类型(无异常为 None)。
-            exc (object): 异常实例(无异常为 None)。
-            tb (object): 异常回溯(无异常为 None)。
+            exc_type (object): the exception type (None if no exception).
+            exc (object): the exception instance (None if no exception).
+            tb (object): the exception traceback (None if no exception).
 
         Returns:
-            None: 不吞异常。
+            None: never swallows the exception.
         """
         self.close()
 
     def close(self) -> None:
-        """提交并关闭底层连接。
+        """Commit and close the underlying connection.
 
         Returns:
             None
@@ -130,10 +138,10 @@ class Store:
         self._conn.commit()
         self._conn.close()
 
-    # ---- 内部工具 ----
+    # ---- internal helpers ----
 
     def _init_schema(self, *, existed: bool = False) -> None:
-        """执行建表语句(幂等，IF NOT EXISTS)。
+        """Execute the table-creation statements (idempotent, IF NOT EXISTS).
 
         Returns:
             None
@@ -205,7 +213,7 @@ class Store:
 
     @property
     def schema_version(self) -> int:
-        """当前数据库 schema 版本。"""
+        """The current database schema version."""
         row = self._conn.execute(
             "SELECT value FROM schema_meta WHERE key = 'schema_version'"
         ).fetchone()
@@ -213,22 +221,22 @@ class Store:
 
     @staticmethod
     def _now() -> datetime:
-        """取当前 UTC 时间。
+        """Get the current UTC time.
 
         Returns:
-            datetime: 带时区(UTC)的当前时间。
+            datetime: the current time, timezone-aware (UTC).
         """
         return datetime.now(timezone.utc)
 
     @staticmethod
     def _to_iso(dt: datetime) -> str:
-        """把 datetime 归一化为 UTC 并转成 ISO 8601 字符串(保证可按字典序比较时间)。
+        """Normalize a datetime to UTC and convert it to an ISO 8601 string (guarantees times can be compared lexicographically).
 
         Args:
-            dt (datetime): 待转换时间；naive(无时区)时间按 UTC 处理。
+            dt (datetime): the time to convert; a naive (tz-less) time is treated as UTC.
 
         Returns:
-            str: 形如 '2026-07-10T12:00:00+00:00' 的字符串。
+            str: a string like '2026-07-10T12:00:00+00:00'.
         """
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
@@ -236,19 +244,19 @@ class Store:
 
     @staticmethod
     def _from_iso(s: str) -> datetime:
-        """把 ISO 8601 字符串解析回带时区的 datetime。
+        """Parse an ISO 8601 string back into a timezone-aware datetime.
 
         Args:
-            s (str): _to_iso 产出的时间字符串。
+            s (str): a time string produced by _to_iso.
 
         Returns:
-            datetime: 带时区(UTC)的时间。
+            datetime: a timezone-aware (UTC) time.
         """
         return datetime.fromisoformat(s)
 
     @staticmethod
     def _lastrowid(cur: sqlite3.Cursor) -> int:
-        """取得 INSERT 主键；驱动未返回主键时给出明确错误。"""
+        """Get the INSERT's primary key; raises a clear error if the driver didn't return one."""
         row_id = cur.lastrowid
         if row_id is None:
             raise RuntimeError(_t("store.error.insert_no_rowid"))
@@ -256,13 +264,13 @@ class Store:
 
     @staticmethod
     def _row_to_task(row: sqlite3.Row) -> Task:
-        """把 task 表的一行映射为 Task 领域对象。
+        """Map a row from the task table to a Task domain object.
 
         Args:
-            row (sqlite3.Row): task 表查询结果的一行。
+            row (sqlite3.Row): one row from a task-table query result.
 
         Returns:
-            Task: 还原出的任务对象。
+            Task: the reconstructed task object.
         """
         return Task(
             id=row["id"],
@@ -277,13 +285,13 @@ class Store:
 
     @staticmethod
     def _row_to_touch(row: sqlite3.Row) -> Touch:
-        """把 touch 表的一行映射为 Touch 领域对象。
+        """Map a row from the touch table to a Touch domain object.
 
         Args:
-            row (sqlite3.Row): touch 表查询结果的一行。
+            row (sqlite3.Row): one row from a touch-table query result.
 
         Returns:
-            Touch: 还原出的触碰事件对象。
+            Touch: the reconstructed touch-event object.
         """
         return Touch(
             id=row["id"],
@@ -293,7 +301,7 @@ class Store:
             note=row["note"],
         )
 
-    # ---- 写入 ----
+    # ---- writes ----
 
     def add_task(
         self,
@@ -305,17 +313,20 @@ class Store:
         ref_strength: ReferenceStrength | str = ReferenceStrength.SOFT,
         ts: datetime | None = None,
     ) -> Task:
-        """新增(分配)一个任务，并记一条 CREATE 触碰事件。
+        """Add (allocate) a new task, and log a CREATE touch event.
 
         Args:
-            title (str): 任务标题。
-            root_id (int | None): 关联到的父(目标/任务)id；None 表示未关联(天然候选)。
-            is_root (bool): 是否本身就是一个活跃 GC root(声明的目标)；rootness 之后由 root_ids() 查询。
-            meta (bool): 是否为常驻 Metaspace 的元任务(如"变得更自律")。
-            ts (datetime | None): 创建时间；None 用当前 UTC。
+            title (str): the task title.
+            root_id (int | None): id of the parent (goal/task) to link to; None means
+                unlinked (a natural candidate).
+            is_root (bool): whether this is itself an active GC root (a declared goal);
+                rootness is queried afterward via root_ids().
+            meta (bool): whether this is a meta-task that permanently lives in Metaspace
+                (e.g. "be more disciplined").
+            ts (datetime | None): the creation time; None uses the current UTC time.
 
         Returns:
-            Task: 已落库、带自增 id 与 created_at 的任务对象。
+            Task: the persisted task object, with an auto-incremented id and created_at.
         """
         title = title.strip()
         if not title:
@@ -353,16 +364,16 @@ class Store:
         note: str | None = None,
         ts: datetime | None = None,
     ) -> Touch:
-        """追加一条触碰事件(唯一的底层事件写入口，只增不改)。
+        """Append a touch event (the single low-level event write path; append-only, never modified).
 
         Args:
-            task_id (int): 目标任务 id。
-            kind (TouchKind): 事件类型。
-            note (str | None): 附加文本(进展说明 / 推迟理由 / 遗言)。
-            ts (datetime | None): 事件时间；None 用当前 UTC。
+            task_id (int): the target task id.
+            kind (TouchKind): the event type.
+            note (str | None): attached text (progress note / snooze reason / eulogy).
+            ts (datetime | None): the event time; None uses the current UTC time.
 
         Returns:
-            Touch: 已落库、带自增 id 的触碰事件对象。
+            Touch: the persisted touch-event object, with an auto-incremented id.
         """
         now = ts or self._now()
         iso = self._to_iso(now)
@@ -377,40 +388,40 @@ class Store:
         )
 
     def progress(self, task_id: int, note: str | None = None, ts: datetime | None = None) -> Touch:
-        """标记"我真的推进了这个任务"——记一条 PROGRESS 事件(计入 refcount)。
+        """Mark "I actually made progress on this task" — logs a PROGRESS event (counted toward refcount).
 
         Args:
-            task_id (int): 目标任务 id。
-            note (str | None): 进展说明。
-            ts (datetime | None): 事件时间；None 用当前 UTC。
+            task_id (int): the target task id.
+            note (str | None): the progress note.
+            ts (datetime | None): the event time; None uses the current UTC time.
 
         Returns:
-            Touch: 新记录的触碰事件。
+            Touch: the newly logged touch event.
         """
         self._require_live_task(task_id)
         return self.record(task_id, TouchKind.PROGRESS, note=note, ts=ts)
 
     def defer(self, task_id: int, note: str | None = None, ts: datetime | None = None) -> Touch:
-        """推迟(snooze)一个任务——记一条 DEFER 事件(喂 skip_count，是自欺的铁证)。
+        """Defer (snooze) a task — logs a DEFER event (feeds skip_count, hard evidence of self-deception).
 
         Args:
-            task_id (int): 目标任务 id。
-            note (str | None): 推迟理由。
-            ts (datetime | None): 事件时间；None 用当前 UTC。
+            task_id (int): the target task id.
+            note (str | None): the reason for deferring.
+            ts (datetime | None): the event time; None uses the current UTC time.
 
         Returns:
-            Touch: 新记录的触碰事件。
+            Touch: the newly logged touch event.
         """
         self._require_live_task(task_id)
         return self.record(task_id, TouchKind.DEFER, note=note, ts=ts)
 
     def link(self, task_id: int, root_id: int, ts: datetime | None = None) -> None:
-        """把任务(重新)关联到某个 GC root：更新 root_id 并记一条 LINK 事件。
+        """(Re-)link a task to a GC root: updates root_id and logs a LINK event.
 
         Args:
-            task_id (int): 目标任务 id。
-            root_id (int): 要关联到的 root(活跃目标)id。
-            ts (datetime | None): 事件时间；None 用当前 UTC。
+            task_id (int): the target task id.
+            root_id (int): id of the root (active goal) to link to.
+            ts (datetime | None): the event time; None uses the current UTC time.
 
         Returns:
             None
@@ -424,19 +435,20 @@ class Store:
         self._conn.commit()
 
     def update_task(self, task: Task) -> None:
-        """把内存中 Task 的当前状态(标题/关联/分代/年龄/状态)回写数据库。
+        """Write an in-memory Task's current state (title/link/generation/age/state) back to the database.
 
-        供 collector 在标记候选、晋升分代、复活/回收后持久化用；本方法不记触碰事件，
-        语义事件(如 REVIVE/COLLECT)由调用方另行 record()。
+        Used by the collector to persist after marking candidates, promoting generations, or
+        reviving/collecting; this method logs no touch event itself — a semantic event (like
+        REVIVE/COLLECT) is recorded separately by the caller via record().
 
         Args:
-            task (Task): 必须带非空 id 的任务对象。
+            task (Task): a task object that must have a non-null id.
 
         Returns:
             None
 
         Raises:
-            ValueError: 当 task.id 为 None(尚未落库)时。
+            ValueError: if task.id is None (not yet persisted).
         """
         if task.id is None:
             raise ValueError(_t("store.error.update_requires_persisted"))
@@ -457,7 +469,7 @@ class Store:
         ref_strength: ReferenceStrength | str | None = None,
         ts: datetime | None = None,
     ) -> Task:
-        """编辑标题和/或引用强度，并写入 EDIT 事件。"""
+        """Edit the title and/or reference strength, and log an EDIT event."""
         task = self._require_live_task(task_id)
         if title is not None:
             title = title.strip()
@@ -471,14 +483,14 @@ class Store:
         return task
 
     def unlink(self, task_id: int, ts: datetime | None = None) -> None:
-        """解除父/目标关联；用 LINK 事件记录审计说明。"""
+        """Unlink the parent/target association; logs a LINK event with an audit note."""
         self._require_live_task(task_id)
         self._conn.execute("UPDATE task SET root_id = NULL WHERE id = ?", (task_id,))
         self.record(task_id, TouchKind.LINK, note="unlink", ts=ts)
         self._conn.commit()
 
     def _require_live_task(self, task_id: int) -> Task:
-        """取存活任务，否则抛出面向用户的 ValueError。"""
+        """Fetch a live task, or raise a user-facing ValueError."""
         row = self._conn.execute("SELECT * FROM task WHERE id = ?", (task_id,)).fetchone()
         if row is None:
             raise ValueError(_t("store.error.task_not_found", id=task_id))
@@ -487,14 +499,14 @@ class Store:
             raise ValueError(_t("store.error.task_already_collected", id=task_id))
         return task
 
-    # ---- roots 与"理由"边(方案 A) ----
+    # ---- roots and "reason" edges (option A) ----
 
     def set_root(self, task_id: int, is_root: bool = True) -> None:
-        """把某任务标记 / 取消标记为活跃 GC root(声明的目标)。
+        """Mark / unmark a task as an active GC root (a declared goal).
 
         Args:
-            task_id (int): 目标任务 id。
-            is_root (bool): True 标记为 root，False 取消。
+            task_id (int): the target task id.
+            is_root (bool): True to mark as root, False to unmark.
 
         Returns:
             None
@@ -504,28 +516,30 @@ class Store:
         self._conn.commit()
 
     def root_ids(self) -> set[int]:
-        """取当前所有活跃 GC root 的 id 集合(判活标记的起点)。
+        """Get the id set of all currently active GC roots (the starting points for the liveness mark).
 
         Returns:
-            set[int]: is_root 为真的任务 id 集合(可能为空)。
+            set[int]: ids of tasks with is_root true (may be empty).
         """
         rows = self._conn.execute("SELECT id FROM task WHERE is_root = 1").fetchall()
         return {int(r["id"]) for r in rows}
 
     def add_dep(self, task_id: int, ref_id: int) -> None:
-        """新增一条"理由"边：task_id 的理由 / 前置是 ref_id(即 task_id 引用 ref_id)。
+        """Add a "reason" edge: task_id's reason/prerequisite is ref_id (i.e. task_id references ref_id).
 
-        幂等(重复添加同一条边不报错)。这类 task→task 边是循环引用检测的输入。
+        Idempotent (adding the same edge twice doesn't error). These task->task edges are the
+        input to reference-cycle detection.
 
         Args:
-            task_id (int): 发出引用的任务 id。
-            ref_id (int): 被引用(作为理由 / 前置)的任务 id。
+            task_id (int): id of the task doing the referencing.
+            ref_id (int): id of the task being referenced (as reason/prerequisite).
 
         Returns:
             None
 
         Raises:
-            ValueError: 当 task_id == ref_id(自环)，或 task_id / ref_id 指向不存在的任务时。
+            ValueError: if task_id == ref_id (a self-loop), or task_id / ref_id points to a
+                nonexistent task.
         """
         if task_id == ref_id:
             raise ValueError(_t("store.error.self_dep"))
@@ -537,11 +551,11 @@ class Store:
         self._conn.commit()
 
     def remove_dep(self, task_id: int, ref_id: int) -> None:
-        """删除一条"理由"边(不存在则无操作)。
+        """Remove a "reason" edge (a no-op if it doesn't exist).
 
         Args:
-            task_id (int): 发出引用的任务 id。
-            ref_id (int): 被引用的任务 id。
+            task_id (int): id of the task doing the referencing.
+            ref_id (int): id of the referenced task.
 
         Returns:
             None
@@ -550,10 +564,11 @@ class Store:
         self._conn.commit()
 
     def deps(self) -> list[tuple[int, int]]:
-        """取全部"理由"边，供 collector 组装引用图。
+        """Get all "reason" edges, for the collector to assemble the reference graph.
 
         Returns:
-            list[tuple[int, int]]: (task_id, ref_id) 列表；每项表示 task_id 引用 ref_id。
+            list[tuple[int, int]]: a list of (task_id, ref_id); each entry means task_id
+                references ref_id.
         """
         rows = self._conn.execute(
             "SELECT task_id, ref_id FROM dep ORDER BY task_id, ref_id"
@@ -561,12 +576,13 @@ class Store:
         return [(int(r["task_id"]), int(r["ref_id"])) for r in rows]
 
     def heap_size(self) -> int:
-        """当前占用活跃堆的任务数：非 COLLECTED、且非 Metaspace 元任务。
+        """The current count of tasks occupying the active heap: non-COLLECTED and non-Metaspace meta-tasks.
 
-        对应 -Xmx 的口径——Metaspace(元任务)在 JVM 里本就不算进 -Xmx，故排除。
+        Matches -Xmx's accounting — Metaspace (meta-tasks) never counts toward -Xmx in the
+        JVM either, hence the exclusion.
 
         Returns:
-            int: 活跃堆上的任务数。
+            int: the number of tasks on the active heap.
         """
         row = self._conn.execute(
             "SELECT count(*) FROM task WHERE state != ? AND gen != ?",
@@ -574,19 +590,20 @@ class Store:
         ).fetchone()
         return int(row[0])
 
-    # ---- 读取(默认带 view 自动埋点) ----
+    # ---- reads (auto-track a view event by default) ----
 
     def get_task(self, task_id: int, *, record_view: bool = True, ts: datetime | None = None) -> Task | None:
-        """按 id 读取任务；默认顺手记一条 VIEW 事件(工具在"看着你看")。
+        """Read a task by id; logs a VIEW event along the way by default (the tool is "watching you look").
 
         Args:
-            task_id (int): 任务 id。
-            record_view (bool): 是否记 VIEW 埋点；collector 等内部扫描应传 False，
-                以免污染事件流、虚增查看次数。
-            ts (datetime | None): VIEW 事件时间；None 用当前 UTC。
+            task_id (int): the task id.
+            record_view (bool): whether to log a VIEW event; internal scans like the
+                collector's should pass False, so they don't pollute the event stream and
+                inflate view counts.
+            ts (datetime | None): the VIEW event time; None uses the current UTC time.
 
         Returns:
-            Task | None: 命中则返回 Task；不存在时返回 None(且不记 VIEW)。
+            Task | None: the Task if found; None if it doesn't exist (and no VIEW is logged).
         """
         row = self._conn.execute("SELECT * FROM task WHERE id = ?", (task_id,)).fetchone()
         if row is None:
@@ -602,15 +619,16 @@ class Store:
         record_view: bool = True,
         ts: datetime | None = None,
     ) -> list[Task]:
-        """列出任务(可按状态过滤)；默认为每个被列出的任务各记一条 VIEW 事件。
+        """List tasks (optionally filtered by state); logs a VIEW event for each listed task by default.
 
         Args:
-            state (State | None): 仅返回该状态的任务；None 返回全部。
-            record_view (bool): 是否为列出的任务记 VIEW 埋点；内部扫描应传 False。
-            ts (datetime | None): VIEW 事件时间；None 用当前 UTC。
+            state (State | None): only return tasks in this state; None returns all.
+            record_view (bool): whether to log a VIEW event for the listed tasks; internal
+                scans should pass False.
+            ts (datetime | None): the VIEW event time; None uses the current UTC time.
 
         Returns:
-            list[Task]: 按 id 升序的任务列表(可能为空)。
+            list[Task]: tasks ordered ascending by id (may be empty).
         """
         if state is None:
             rows = self._conn.execute("SELECT * FROM task ORDER BY id").fetchall()
@@ -629,20 +647,20 @@ class Store:
         return tasks
 
     def touches(self, task_id: int) -> list[Touch]:
-        """取某任务的全部触碰事件，按时间升序(判活 / GC 日志的原始素材)。
+        """Get all touch events for a task, ascending by time (the raw material for liveness / the GC log).
 
         Args:
-            task_id (int): 任务 id。
+            task_id (int): the task id.
 
         Returns:
-            list[Touch]: 该任务的触碰事件列表(可能为空)。
+            list[Touch]: the task's touch events (may be empty).
         """
         rows = self._conn.execute(
             "SELECT * FROM touch WHERE task_id = ? ORDER BY ts, id", (task_id,)
         ).fetchall()
         return [self._row_to_touch(r) for r in rows]
 
-    # ---- 判活指标(纯查询，不落库) ----
+    # ---- liveness metrics (pure queries, no writes) ----
 
     def _count_touches(
         self,
@@ -652,16 +670,17 @@ class Store:
         within_days: int | None = None,
         now: datetime | None = None,
     ) -> int:
-        """统计某任务在指定类型(和可选时间窗)内的触碰次数。
+        """Count a task's touch events of the given types (and optional time window).
 
         Args:
-            task_id (int): 任务 id。
-            kinds (tuple[str, ...]): 事件类型值集合(TouchKind.value)。
-            within_days (int | None): 仅统计最近 N 天；None 表示不限时间。
-            now (datetime | None): 时间窗的"现在"基准；None 用当前 UTC。
+            task_id (int): the task id.
+            kinds (tuple[str, ...]): the set of event type values (TouchKind.value).
+            within_days (int | None): only count the last N days; None means no time limit.
+            now (datetime | None): the "now" base for the time window; None uses the current
+                UTC time.
 
         Returns:
-            int: 满足条件的触碰事件数量。
+            int: the count of matching touch events.
         """
         if not kinds:
             return 0
@@ -675,31 +694,32 @@ class Store:
         return int(self._conn.execute(sql, params).fetchone()[0])
 
     def refcount(self, task_id: int, *, within_days: int | None = None, now: datetime | None = None) -> int:
-        """任务的引用计数 = 真推进(PROGRESS/EDIT)次数；可限定最近 N 天。
+        """A task's reference count = count of real progress events (PROGRESS/EDIT); optionally limited to the last N days.
 
         Args:
-            task_id (int): 任务 id。
-            within_days (int | None): 仅统计最近 N 天(判活默认用 30)；None 表示不限。
-            now (datetime | None): 时间窗基准；None 用当前 UTC。
+            task_id (int): the task id.
+            within_days (int | None): only count the last N days (liveness defaults to 30);
+                None means no limit.
+            now (datetime | None): the time-window base; None uses the current UTC time.
 
         Returns:
-            int: refcount 值。
+            int: the refcount value.
         """
         return self._count_touches(task_id, _PROGRESS_KIND_VALUES, within_days=within_days, now=now)
 
     def skip_count(self, task_id: int) -> int:
-        """任务被推迟(DEFER)的累计次数。
+        """Cumulative count of times a task has been deferred (DEFER).
 
         Args:
-            task_id (int): 任务 id。
+            task_id (int): the task id.
 
         Returns:
-            int: skip_count 值。
+            int: the skip_count value.
         """
         return self._count_touches(task_id, (TouchKind.DEFER.value,))
 
     def consecutive_skip_count(self, task_id: int) -> int:
-        """最后一次推进/编辑/复活/恢复之后的连续 DEFER 数。"""
+        """Count of consecutive DEFERs since the last progress/edit/revive/restore."""
         reset = {
             TouchKind.PROGRESS, TouchKind.EDIT, TouchKind.REVIVE, TouchKind.RESTORE,
         }
@@ -714,25 +734,26 @@ class Store:
         return count
 
     def view_count(self, task_id: int) -> int:
-        """任务被查看(VIEW)的累计次数——通常远大于 refcount，是打脸金句的弹药。
+        """Cumulative count of times a task has been viewed (VIEW) — usually far greater than refcount, ammunition for the taunts.
 
         Args:
-            task_id (int): 任务 id。
+            task_id (int): the task id.
 
         Returns:
-            int: view_count 值。
+            int: the view_count value.
         """
         return self._count_touches(task_id, (TouchKind.VIEW.value,))
 
     def last_touch_at(self, task_id: int, *, progress_only: bool = False) -> datetime | None:
-        """任务最后一次被触碰的时间。
+        """The last time a task was touched.
 
         Args:
-            task_id (int): 任务 id。
-            progress_only (bool): True 时只看真推进(PROGRESS/EDIT)，用于判活的"最近碰过"。
+            task_id (int): the task id.
+            progress_only (bool): if True, only considers real progress (PROGRESS/EDIT),
+                used for liveness's "recently touched".
 
         Returns:
-            datetime | None: 最后触碰时间；无相应事件时返回 None。
+            datetime | None: the last touch time; None if there's no matching event.
         """
         if progress_only:
             placeholders = ",".join("?" for _ in _PROGRESS_KIND_VALUES)
@@ -744,7 +765,7 @@ class Store:
         row = self._conn.execute(sql, params).fetchone()
         return self._from_iso(row[0]) if row and row[0] is not None else None
 
-    # ---- GC 审计历史 ----
+    # ---- GC audit history ----
 
     def record_gc_run(
         self,
@@ -759,7 +780,7 @@ class Store:
         released_pct: float,
         items: list[tuple[int, str, str]] | None = None,
     ) -> int:
-        """记录一次真正执行的 GC；item 为 ``(task_id, reason, action)``。"""
+        """Record a GC that was actually executed; each item is ``(task_id, reason, action)``."""
         cur = self._conn.execute(
             "INSERT INTO gc_run(started_at, mode, heap_before, survivors, candidates, collected, revived, released_pct) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -778,7 +799,7 @@ class Store:
         return run_id
 
     def gc_runs(self, *, since_days: int | None = None, now: datetime | None = None) -> list[GCRun]:
-        """读取 GC 历史，最近的在前。"""
+        """Read the GC history, most recent first."""
         sql = "SELECT * FROM gc_run"
         params: list[object] = []
         if since_days is not None:
@@ -797,13 +818,14 @@ class Store:
             for r in rows
         ]
 
-    # ---- 定时体检(watch)：状态去抖 + 单实例建议性锁 ----
+    # ---- scheduled checkup (watch): state debouncing + single-instance advisory lock ----
 
     def watch_states(self) -> dict[int, WatchState]:
-        """读取全部任务上一轮 watch tick 记录的状态，供本轮 diff 出"跃迁"用。
+        """Read every task's status recorded on the previous watch tick, for this round to diff out "transitions".
 
         Returns:
-            dict[int, WatchState]: task_id → 上一轮状态；从未跑过 watch 的任务不在其中。
+            dict[int, WatchState]: task_id -> previous round's status; tasks that have never
+                been through watch aren't included.
         """
         rows = self._conn.execute("SELECT task_id, status, notified_at FROM watch_state").fetchall()
         return {
@@ -816,13 +838,14 @@ class Store:
         }
 
     def record_watch_tick(self, task_id: int, status: str, *, notified_at: datetime | None = None) -> None:
-        """记录本轮 tick 里某任务的判定状态；仅当本轮确实为它推送过事件才顺带盖去抖时间戳。
+        """Record a task's judged status for this round's tick; only stamps the debounce timestamp if an event was actually pushed for it this round.
 
         Args:
-            task_id (int): 任务 id。
-            status (str): 本轮判定状态("alive" 或 collector.Reason 的值)。
-            notified_at (datetime | None): 本轮为该任务发过事件推送则传推送时间；
-                否则传 None，保留上一次的 notified_at 不变(不代表"未推送过"要清零)。
+            task_id (int): the task id.
+            status (str): this round's judged status ("alive" or a collector.Reason value).
+            notified_at (datetime | None): pass the push time if an event was pushed for this
+                task this round; otherwise pass None to leave the previous notified_at
+                unchanged (this does not mean "never pushed" should be reset to zero).
 
         Returns:
             None
@@ -842,23 +865,23 @@ class Store:
         self._conn.commit()
 
     def watch_meta_get(self, key: str) -> str | None:
-        """读取一条 watch_meta 键值(如 last_digest_at)。
+        """Read a watch_meta key-value pair (e.g. last_digest_at).
 
         Args:
-            key (str): 键名。
+            key (str): the key name.
 
         Returns:
-            str | None: 对应值；不存在时 None。
+            str | None: the matching value; None if it doesn't exist.
         """
         row = self._conn.execute("SELECT value FROM watch_meta WHERE key = ?", (key,)).fetchone()
         return row["value"] if row is not None else None
 
     def watch_meta_set(self, key: str, value: str) -> None:
-        """写入(新增或覆盖)一条 watch_meta 键值(如 last_digest_at)。
+        """Write (insert or overwrite) a watch_meta key-value pair (e.g. last_digest_at).
 
         Args:
-            key (str): 键名。
-            value (str): 值。
+            key (str): the key name.
+            value (str): the value.
 
         Returns:
             None
@@ -871,18 +894,22 @@ class Store:
         self._conn.commit()
 
     def try_acquire_watch_lock(self, pid: int, now: datetime, *, stale_after: timedelta) -> bool:
-        """尝试拿到"本进程是这个库唯一 watcher"的建议性锁(不是数据库级互斥锁，只是约定)。
+        """Try to acquire the advisory lock for "this process is the only watcher for this database" (not a database-level mutex, just a convention).
 
-        没有锁记录、或已有锁的心跳早于 ``stale_after``(判定持锁进程已死)时，本进程接管成功；
-        若已有别的、心跳仍新鲜的 watcher 持锁，返回 False，调用方应放弃启动、避免重复推送。
+        Succeeds in taking over when there's no lock record, or the existing lock's heartbeat
+        predates ``stale_after`` (the lock-holding process is judged dead); if another watcher
+        holds the lock with a still-fresh heartbeat, returns False and the caller should give
+        up starting, to avoid duplicate pushes.
 
         Args:
-            pid (int): 本进程 pid。
-            now (datetime): 当前时间。
-            stale_after (timedelta): 心跳早于此时长即判定锁已过期，允许被接管。
+            pid (int): this process's pid.
+            now (datetime): the current time.
+            stale_after (timedelta): a heartbeat older than this is judged expired and may be
+                taken over.
 
         Returns:
-            bool: True 表示已拿到(或续期)锁；False 表示另一个 watcher 仍存活，本进程应放弃。
+            bool: True if the lock was acquired (or renewed); False if another watcher is
+                still alive and this process should back off.
         """
         heartbeat_raw = self.watch_meta_get("watch_lock_heartbeat_at")
         if heartbeat_raw is not None and now - self._from_iso(heartbeat_raw) < stale_after:
@@ -894,11 +921,11 @@ class Store:
         return True
 
     def heartbeat_watch_lock(self, pid: int, now: datetime) -> None:
-        """续期本进程持有的 watch 锁(仅当锁确实属于本 pid 时才生效)。
+        """Renew the watch lock held by this process (only takes effect if the lock actually belongs to this pid).
 
         Args:
-            pid (int): 本进程 pid。
-            now (datetime): 当前时间。
+            pid (int): this process's pid.
+            now (datetime): the current time.
 
         Returns:
             None
@@ -908,10 +935,10 @@ class Store:
             self.watch_meta_set("watch_lock_heartbeat_at", self._to_iso(now))
 
     def release_watch_lock(self, pid: int) -> None:
-        """主动释放本进程持有的 watch 锁(仅当锁确实属于本 pid 时才生效)，供优雅退出时调用。
+        """Voluntarily release the watch lock held by this process (only takes effect if the lock actually belongs to this pid); call this on graceful shutdown.
 
         Args:
-            pid (int): 本进程 pid。
+            pid (int): this process's pid.
 
         Returns:
             None

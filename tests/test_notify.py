@@ -1,4 +1,4 @@
-# test_notify.py —— NtfyChannel：JSON 发布格式(UTF-8 标题/正文)、鉴权头、优先级校验、失败态到 NotifyError 的转换。
+# test_notify.py — NtfyChannel: the JSON publish format (UTF-8 title/body), auth headers, priority validation, and converting failures into NotifyError.
 
 from __future__ import annotations
 
@@ -12,12 +12,12 @@ from todogc.notify import NotifyError, NtfyChannel
 
 
 class _CapturingHandler(BaseHTTPRequestHandler):
-    """记下收到的请求(JSON body + 两个我们关心的 header)，回一个可控的状态码。"""
+    """Records the received request (JSON body + the two headers we care about), and replies with a controllable status code."""
 
     captured: list[dict] = []
     response_status = 200
 
-    def do_POST(self) -> None:  # noqa: N802 - http.server 的既定接口名
+    def do_POST(self) -> None:  # noqa: N802 - http.server's established interface name
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length)
         _CapturingHandler.captured.append(
@@ -30,16 +30,17 @@ class _CapturingHandler(BaseHTTPRequestHandler):
         self.send_response(_CapturingHandler.response_status)
         self.end_headers()
 
-    def log_message(self, format: str, *args: object) -> None:  # 静默，别刷测试输出
+    def log_message(self, format: str, *args: object) -> None:  # stay quiet, don't spam test output
         pass
 
 
 @pytest.fixture
 def ntfy_server():
-    """起一个本地 HTTP 服务，捕获 NtfyChannel 发出的请求；结束后关掉。
+    """Start a local HTTP server that captures requests sent by NtfyChannel; shuts it down afterward.
 
     Yields:
-        HTTPServer: 已在后台线程跑起来的服务，server_address[1] 是分配到的端口。
+        HTTPServer: the server, already running on a background thread; server_address[1] is
+            the assigned port.
     """
     _CapturingHandler.captured = []
     _CapturingHandler.response_status = 200
@@ -53,7 +54,7 @@ def ntfy_server():
 
 
 def test_send_posts_json_body_with_utf8_title(ntfy_server):
-    """topic/title/message/priority/tags 都进 JSON body；中文标题原样保留，不走 HTTP header。"""
+    """topic/title/message/priority/tags all go into the JSON body; a Chinese title is preserved as-is, never routed through an HTTP header."""
     port = ntfy_server.server_address[1]
     channel = NtfyChannel(topic="todogc-x", server=f"http://127.0.0.1:{port}")
     channel.send("新增候选", "🆕 #1 学吉他 —— 从任何活跃目标都不可达", priority=4, tags=["skull"])
@@ -72,7 +73,7 @@ def test_send_posts_json_body_with_utf8_title(ntfy_server):
 
 
 def test_send_includes_bearer_token_when_configured(ntfy_server):
-    """配了 token 才带 Authorization: Bearer；公共实例默认不带。"""
+    """Authorization: Bearer is only sent when a token is configured; the public instance omits it by default."""
     port = ntfy_server.server_address[1]
     channel = NtfyChannel(topic="todogc-x", server=f"http://127.0.0.1:{port}", token="s3cr3t")
     channel.send("t", "m")
@@ -80,7 +81,7 @@ def test_send_includes_bearer_token_when_configured(ntfy_server):
 
 
 def test_send_omits_tags_field_when_not_given(ntfy_server):
-    """没传 tags 时 JSON body 里干脆不带这个字段，而不是塞个空列表。"""
+    """When tags isn't passed, the JSON body simply omits the field rather than sending an empty list."""
     port = ntfy_server.server_address[1]
     channel = NtfyChannel(topic="todogc-x", server=f"http://127.0.0.1:{port}")
     channel.send("t", "m")
@@ -88,7 +89,7 @@ def test_send_omits_tags_field_when_not_given(ntfy_server):
 
 
 def test_send_raises_notify_error_on_non_2xx(ntfy_server):
-    """服务端返回非 2xx 时转换成 NotifyError，而不是让 urllib 的 HTTPError 直接漏出去。"""
+    """A non-2xx server response is converted into a NotifyError, rather than letting urllib's HTTPError leak straight through."""
     _CapturingHandler.response_status = 500
     port = ntfy_server.server_address[1]
     channel = NtfyChannel(topic="todogc-x", server=f"http://127.0.0.1:{port}")
@@ -97,20 +98,20 @@ def test_send_raises_notify_error_on_non_2xx(ntfy_server):
 
 
 def test_send_raises_notify_error_on_connection_refused():
-    """连不上服务端(网络错误)同样转换成 NotifyError，口径统一，调用方不用分辨两种异常。"""
+    """Being unable to reach the server (a network error) is likewise converted into a NotifyError, so callers never need to distinguish the two exception types."""
     channel = NtfyChannel(topic="todogc-x", server="http://127.0.0.1:1")
     with pytest.raises(NotifyError):
         channel.send("t", "m")
 
 
 def test_send_rejects_priority_out_of_range():
-    """priority 校验在真正发请求之前，越界直接 ValueError，不产生任何网络调用。"""
+    """priority is validated before any request is actually sent; out-of-range raises ValueError directly, with no network call made."""
     channel = NtfyChannel(topic="todogc-x", server="http://127.0.0.1:1")
     with pytest.raises(ValueError, match="between 1 and 5"):
         channel.send("t", "m", priority=6)
 
 
 def test_empty_topic_rejected():
-    """topic 是必填项，构造期就该炸，而不是等 send() 时才发现推送目标是空的。"""
+    """topic is required and should fail at construction time, rather than discovering an empty push target only at send()."""
     with pytest.raises(ValueError, match="topic"):
         NtfyChannel(topic="")

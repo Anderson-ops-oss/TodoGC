@@ -1,5 +1,6 @@
-# test_watcher.py —— 定时体检：run_tick 的去抖/复议期/恢复语义、堆告警边沿触发、
-# 推送消息文案、Watcher 的构造校验与 _run_once 编排(用假 channel，不碰真网络)。
+# test_watcher.py — the scheduled checkup: run_tick's debounce/reminder-period/recovery
+# semantics, heap-alarm edge-triggering, push message copy, Watcher's construction
+# validation, and _run_once's orchestration (using a fake channel, no real network).
 
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from todogc.watcher import (
 
 
 class _FakeChannel:
-    """记录 send() 调用参数的假推送渠道；fail=True 时每次都抛 NotifyError。"""
+    """A fake push channel that records send() call arguments; raises NotifyError every time when fail=True."""
 
     def __init__(self, *, fail: bool = False) -> None:
         self.calls: list[dict] = []
@@ -34,14 +35,14 @@ class _FakeChannel:
 
 
 def _watcher(config: AppConfig) -> Watcher:
-    """构造一个 Watcher；db_path 不会被用到(_run_once/_digest_due 都直接吃传入的 store)。"""
+    """Construct a Watcher; db_path is never actually used (_run_once/_digest_due both take the passed-in store directly)."""
     return Watcher("unused.db", config)
 
 
-# ============ run_tick：去抖 / 复议期 / 恢复 / 堆告警 ============
+# ============ run_tick: debounce / reminder period / recovery / heap alarm ============
 
 def test_new_candidate_triggers_event_then_dedupes(store, now):
-    """全新候选第一轮触发事件；立刻再跑一轮、状态不变 → 不重复推。"""
+    """A brand-new candidate triggers an event on the first round; running another round right away with unchanged status doesn't push again."""
     root = store.add_task("G", is_root=True, ts=now - timedelta(days=40))
     task = store.add_task("僵尸", root_id=root.id, ts=now - timedelta(days=40))
     cfg = AppConfig()
@@ -55,7 +56,7 @@ def test_new_candidate_triggers_event_then_dedupes(store, now):
 
 
 def test_cycle_candidates_flagged_as_new_event(store, now):
-    """互相担保的循环引用一样触发事件，状态串带上环号(供后续换环搭子时识别为新跃迁)。"""
+    """A mutually-vouching reference cycle triggers an event too, with the status string carrying the cycle number (so a later change of cycle buddy is recognized as a new transition)."""
     old = now - timedelta(days=40)
     a = store.add_task("学Rust", ts=old)
     b = store.add_task("重写博客", ts=old)
@@ -68,7 +69,7 @@ def test_cycle_candidates_flagged_as_new_event(store, now):
 
 
 def test_remind_after_days_refires_unchanged_candidate(store, now):
-    """状态没变，但距上次推送已超过 remind_days → 复议期到，再推一次。"""
+    """Status unchanged, but longer than remind_days since the last push -> the reminder period is reached, push again."""
     root = store.add_task("G", is_root=True, ts=now - timedelta(days=40))
     task = store.add_task("僵尸", root_id=root.id, ts=now - timedelta(days=40))
     cfg = AppConfig(watch_remind_days=7)
@@ -82,7 +83,7 @@ def test_remind_after_days_refires_unchanged_candidate(store, now):
 
 
 def test_recovery_resets_dedupe_state_silently(store, now):
-    """候选复活变回 alive：不推送(这是好消息)，且 watch_state 清回 alive 供下次堕落重新算"新"。"""
+    """A candidate reviving back to alive: no push (this is good news), and watch_state resets to alive so the next backslide counts as "new" again."""
     root = store.add_task("G", is_root=True, ts=now - timedelta(days=40))
     task = store.add_task("僵尸", root_id=root.id, ts=now - timedelta(days=40))
     cfg = AppConfig()
@@ -97,7 +98,7 @@ def test_recovery_resets_dedupe_state_silently(store, now):
 
 
 def test_heap_alarm_is_edge_triggered(store, now):
-    """堆占用跨阈值那一刻告警一次；持续高位不重复告警。"""
+    """Alarms once at the moment heap usage crosses the threshold; doesn't repeat while persistently high."""
     cfg = AppConfig(watch_heap_threshold_pct=50, heap_max=4)
     for i in range(3):  # 3/4 = 75% >= 50%
         store.add_task(f"T{i}", ts=now)
@@ -108,10 +109,10 @@ def test_heap_alarm_is_edge_triggered(store, now):
     assert second.heap_alarm is False
 
 
-# ============ 推送消息文案(纯函数) ============
+# ============ Push message copy (pure functions) ============
 
 def test_event_message_bundles_multiple_events_into_one_push():
-    """多条跃迁合并成一条推送(中文)；循环用 🔗、其余用 🆕，附带堆占用摘要。"""
+    """Multiple transitions merge into a single push (Chinese); cycles use 🔗, everything else uses 🆕, with a heap-usage summary attached."""
     result = TickResult(
         events=[
             TickEvent(task_id=1, title="学吉他", status="stale", detail="可达但已死"),
@@ -128,7 +129,7 @@ def test_event_message_bundles_multiple_events_into_one_push():
 
 
 def test_event_message_bundles_multiple_events_into_one_push_english_default():
-    """同一份数据用英文(默认语言)渲染——图标/占位符逻辑跟语言无关，措辞跟着 lang 走。"""
+    """The same data rendered in English (the default language) — the icon/placeholder logic is language-independent, only the wording follows lang."""
     result = TickResult(
         events=[
             TickEvent(task_id=1, title="Learn guitar", status="stale", detail="Reachable but dead"),
@@ -156,16 +157,16 @@ def test_digest_message_format():
     assert "候选 5 个" in body and "20%" in body
 
 
-# ============ Watcher：构造校验 + _run_once 编排 ============
+# ============ Watcher: construction validation + _run_once orchestration ============
 
 def test_watcher_requires_ntfy_enabled():
-    """notify.ntfy_enabled 未开启时拒绝构造，而不是等 run() 时才发现推送目标没配。"""
+    """Refuses construction when notify.ntfy_enabled isn't turned on, rather than discovering the push target isn't configured only at run()."""
     with pytest.raises(ValueError, match="ntfy_enabled"):
         Watcher("unused.db", AppConfig(ntfy_enabled=False))
 
 
 def test_run_once_sends_only_the_event_push_when_nothing_else_due(store, now):
-    """把告警阈值和心跳周期都调到不会触发，验证一次 tick 只发该发的那一条。"""
+    """Tunes both the alarm threshold and the digest interval so neither triggers, verifying one tick sends only the push it should."""
     root = store.add_task("G", is_root=True, ts=now - timedelta(days=40))
     store.add_task("僵尸", root_id=root.id, ts=now - timedelta(days=40))
     cfg = AppConfig(
@@ -175,7 +176,7 @@ def test_run_once_sends_only_the_event_push_when_nothing_else_due(store, now):
     watcher = _watcher(cfg)
     fake = _FakeChannel()
     watcher._channel = fake  # pyright: ignore[reportAttributeAccessIssue]
-    store.watch_meta_set("last_digest_at", now.isoformat())  # 排除"首次必发摘要"这条
+    store.watch_meta_set("last_digest_at", now.isoformat())  # rule out the "first run always sends a digest" case
 
     watcher._run_once(store, now)
 
@@ -187,7 +188,7 @@ def test_run_once_sends_only_the_event_push_when_nothing_else_due(store, now):
 
 
 def test_run_once_sends_all_three_categories_and_swallows_failures(store, now, caplog):
-    """事件 + 堆告警 + 心跳摘要都到齐时各发一条；渠道全部失败也不能让 tick 本身炸。"""
+    """When event + heap alarm + heartbeat digest are all due, each sends one push; the channel failing entirely must not blow up the tick itself."""
     root = store.add_task("G", is_root=True, ts=now - timedelta(days=40))
     store.add_task("僵尸", root_id=root.id, ts=now - timedelta(days=40))
     cfg = AppConfig(ntfy_enabled=True, ntfy_topic="x", watch_heap_threshold_pct=1, heap_max=2)
@@ -196,7 +197,7 @@ def test_run_once_sends_all_three_categories_and_swallows_failures(store, now, c
     watcher._channel = fake  # pyright: ignore[reportAttributeAccessIssue]
 
     with caplog.at_level("WARNING", logger="todogc.watcher"):
-        watcher._run_once(store, now)  # 不应抛出
+        watcher._run_once(store, now)  # should not raise
 
     titles = {c["title"] for c in fake.calls}
     assert titles == {"TodoGC · New candidate", "TodoGC · Heap usage alert", "TodoGC · Scheduled checkup"}
@@ -207,7 +208,7 @@ def test_digest_due_respects_interval(store, now):
     cfg = AppConfig(ntfy_enabled=True, ntfy_topic="x", watch_digest_seconds=100)
     watcher = _watcher(cfg)
 
-    assert watcher._digest_due(store, now) is True  # 从没发过摘要
+    assert watcher._digest_due(store, now) is True  # a digest has never been sent before
     store.watch_meta_set("last_digest_at", now.isoformat())
     assert watcher._digest_due(store, now + timedelta(seconds=50)) is False
     assert watcher._digest_due(store, now + timedelta(seconds=101)) is True

@@ -1,4 +1,4 @@
-# test_cli.py —— 命令行入口与回收仪式：命令链、错误处理、复活/回收/遗言、finalize 单次。
+# test_cli.py — the command-line entry point and collection ceremony: command chains, error handling, revive/collect/eulogy, and finalize firing only once.
 
 from __future__ import annotations
 
@@ -13,19 +13,19 @@ from todogc.store import Store
 
 
 def _db(tmp_path) -> str:
-    """给出一个临时数据库文件路径。
+    """Give back a temporary database file path.
 
     Args:
-        tmp_path: pytest 提供的临时目录。
+        tmp_path: the temporary directory pytest provides.
 
     Returns:
-        str: 该目录下的 db 文件路径。
+        str: a db file path under that directory.
     """
     return str(tmp_path / "t.db")
 
 
 def test_command_chain(tmp_path, capsys):
-    """add/root/dep/progress/snooze/ls/gc --dry-run 全链路退出码 0 且落库正确。"""
+    """The full add/root/dep/progress/snooze/ls/gc --dry-run chain exits 0 and persists correctly."""
     db = _db(tmp_path)
     assert main(["--db", db, "add", "上线X", "--root"]) == 0
     assert main(["--db", db, "add", "写模块", "--root-id", "1"]) == 0
@@ -45,16 +45,16 @@ def test_command_chain(tmp_path, capsys):
 
 
 def test_bad_id_is_clean_error(tmp_path):
-    """错 id 返回 1 而非抛 traceback。"""
+    """A bad id returns 1 instead of raising a traceback."""
     db = _db(tmp_path)
     main(["--db", db, "add", "A"])
-    assert main(["--db", db, "dep", "1", "99"]) == 1  # ref 不存在
-    assert main(["--db", db, "dep", "1", "1"]) == 1  # 自环
-    assert main(["--db", db, "progress", "99"]) == 1  # 任务不存在
+    assert main(["--db", db, "dep", "1", "99"]) == 1  # ref doesn't exist
+    assert main(["--db", db, "dep", "1", "1"]) == 1  # self-loop
+    assert main(["--db", db, "progress", "99"]) == 1  # task doesn't exist
 
 
 def test_ceremony_revive_collect_eulogy(store, now):
-    """复活 age+1 并重连 root；回收写遗言；首次回收触发 finalize。"""
+    """Revive bumps age+1 and re-links the root; collect writes the eulogy; the first collection triggers finalize."""
     goal = store.add_task("G", is_root=True, ts=now)
     orphan = store.add_task("O", ts=now)
     a = store.add_task("A", ts=now)
@@ -79,10 +79,10 @@ def test_ceremony_revive_collect_eulogy(store, now):
 
 
 def test_finalize_only_once(store, now):
-    """复活过的任务再被回收，不再收集遗言，盖章 finalize() already called。"""
+    """A task that was previously revived and gets collected again no longer collects a eulogy, stamped finalize() already called."""
     store.add_task("G", is_root=True, ts=now)
     x = store.add_task("X", ts=now)
-    store.record(x.id, TouchKind.REVIVE, ts=now - timedelta(days=8))  # 上轮复活，宽限期已过
+    store.record(x.id, TouchKind.REVIVE, ts=now - timedelta(days=8))  # revived last round, the grace period has passed
     assert _finalize_spent(store, x.id)
     res = Collector().run_on_store(store, store.root_ids(), now=now)
     run_ceremony(store, res, decide=lambda c: "collect", eulogize=lambda c: "不该采用", now=now)
@@ -91,7 +91,7 @@ def test_finalize_only_once(store, now):
 
 
 def test_graveyard_and_restore(tmp_path, capsys):
-    """回收后 graveyard 显示墓志铭；restore 恢复为 live。"""
+    """After collection, graveyard shows the epitaph; restore brings it back to live."""
     db = _db(tmp_path)
     main(["--db", db, "add", "X"])
     with Store(db) as s:
@@ -107,37 +107,37 @@ def test_graveyard_and_restore(tmp_path, capsys):
 
 
 def test_oom_blocks_add_and_force_bypasses(tmp_path, capsys):
-    """活跃堆满时 add 被 Allocation Failure 拦下(退出 1)，--force 可强行超配。"""
+    """When the active heap is full, add is blocked by Allocation Failure (exit 1); --force can force an over-allocation."""
     db = _db(tmp_path)
-    main(["--heap-max", "2", "--db", db, "add", "G", "--root"])  # #1，堆=1
-    main(["--heap-max", "2", "--db", db, "add", "orphan"])  # #2，堆=2(满)
+    main(["--heap-max", "2", "--db", db, "add", "G", "--root"])  # #1, heap=1
+    main(["--heap-max", "2", "--db", db, "add", "orphan"])  # #2, heap=2 (full)
     assert main(["--heap-max", "2", "--db", db, "add", "第三个"]) == 1
     assert "Allocation Failure" in capsys.readouterr().err
     with Store(db) as s:
-        assert s.heap_size() == 2  # 第三个没进去
+        assert s.heap_size() == 2  # the third one never got in
     assert main(["--heap-max", "2", "--db", db, "add", "硬加", "--force"]) == 0
     with Store(db) as s:
         assert s.heap_size() == 3
 
 
 def test_meta_not_counted_toward_heap(tmp_path):
-    """元任务(Metaspace)不占 -Xmx，堆满时仍可 add --meta。"""
+    """Meta-tasks (Metaspace) don't count toward -Xmx, so add --meta still works when the heap is full."""
     db = _db(tmp_path)
-    main(["--heap-max", "1", "--db", db, "add", "G", "--root"])  # 堆=1(满)
+    main(["--heap-max", "1", "--db", db, "add", "G", "--root"])  # heap=1 (full)
     assert main(["--heap-max", "1", "--db", db, "add", "变得更自律", "--meta"]) == 0
     with Store(db) as s:
-        assert s.heap_size() == 1  # meta 不计入
+        assert s.heap_size() == 1  # meta doesn't count
 
 
 def test_true_oom_gives_diagnosis(tmp_path, capsys):
-    """堆满且无可回收僵尸时，给 Full GC / 砍需求 的诊断。"""
+    """When the heap is full with no reclaimable zombies, gives a Full GC / cut scope diagnosis."""
     db = _db(tmp_path)
-    main(["--heap-max", "1", "--db", db, "add", "G", "--root"])  # root 存活、非候选
+    main(["--heap-max", "1", "--db", db, "add", "G", "--root"])  # root is alive, not a candidate
     assert main(["--heap-max", "1", "--db", db, "add", "又一个"]) == 1
     assert "GC is powerless" in capsys.readouterr().err
 
 
-# ============ i18n：--lang / 环境变量 / 配置文件 优先级 ============
+# ============ i18n: --lang / env var / config file precedence ============
 
 def test_default_language_is_english(tmp_path, capsys):
     db = _db(tmp_path)

@@ -1,4 +1,5 @@
-# pyproject.toml —— 项目清单：元数据、构建后端、todogc 命令入口与工具配置。
+# pyproject.toml — the project manifest: metadata, build backend, the todogc command entry
+# point, and tool configuration.
 
 [build-system]
 requires = ["setuptools>=77.0"]
@@ -7,7 +8,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "todogc"
 version = "0.4.0"
-description = "把待办清单当堆内存，用 GC 冷酷回收你永远不会做的僵尸任务。"
+description = "Treats your todo list as a program's heap, and uses GC to coldly reclaim the zombie tasks you'll never actually do."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -17,16 +18,16 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Environment :: Console",
 ]
-# 核心零依赖：只用标准库(sqlite3 / argparse / dataclasses / datetime)。
+# Zero dependencies at the core: standard library only (sqlite3 / argparse / dataclasses / datetime).
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "build>=1.0", "ruff>=0.8", "basedpyright>=1.31"]  # 测试、打包与静态检查
-color = ["rich>=13"]                 # 可选：装了才有彩色输出，核心不依赖它
-web = ["streamlit>=1.30"]            # 可选：Web 端堆内存图 + 交互(todogc web)
+dev = ["pytest>=7.0", "build>=1.0", "ruff>=0.8", "basedpyright>=1.31"]  # tests, packaging, and static checks
+color = ["rich>=13"]                 # optional: colored output when installed, core doesn't depend on it
+web = ["streamlit>=1.30"]            # optional: the Web UI's heap map + interaction (todogc web)
 
 [project.scripts]
-# 安装后即可直接敲 `todogc gc`，无需 python -m todogc.cli。
+# Once installed, just type `todogc gc` directly — no need for python -m todogc.cli.
 todogc = "todogc.cli:main"
 
 [tool.setuptools]
