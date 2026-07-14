@@ -1,11 +1,16 @@
-# i18n.py —— 轻量文案目录 + 语言解析，替代 gettext 工具链(零构建步骤，字典即代码)。
+# i18n.py — a lightweight message catalog + locale resolver, standing in for the gettext
+# toolchain (zero build step, the dict is the code).
 #
-# 三种调用场景各自管理"当前语言"，这个模块本身不做场景假设：
-#   - CLI：单进程单语言，启动时调用一次 set_locale()，后续 t() 都吃全局默认值。
-#   - Watcher(后台线程)：AppConfig.lang 显式传给 Watcher，每次 t(..., lang=cfg.lang) 显式传参，
-#     不依赖这里的全局状态(threading.Thread 不会继承调用线程设置的全局值)。
-#   - Web(每个浏览器 session 一个语言)：每次 rerun 从 st.session_state 读出 lang，显式传参，
-#     同样不吃全局状态，避免多 session 互相污染。
+# Each of the three call sites owns its own notion of "current language"; this module makes
+# no assumption about which:
+#   - CLI: single process, single language — set_locale() runs once at startup, and every
+#     t() call afterwards falls back on that global default.
+#   - Watcher (background thread): AppConfig.lang is passed to the Watcher explicitly, and
+#     every call is t(..., lang=cfg.lang) — it never relies on the global here, since a
+#     threading.Thread doesn't inherit globals set by the thread that spawned it.
+#   - Web (one language per browser session): on every rerun, lang is read from
+#     st.session_state and passed explicitly — same reasoning, so sessions can't bleed
+#     their language setting into each other.
 
 from __future__ import annotations
 
@@ -26,7 +31,7 @@ _current_locale = DEFAULT_LOCALE
 
 
 def set_locale(locale: str) -> None:
-    """设置 CLI 场景下的全局默认语言。"""
+    """Set the global default language, for the CLI's use case."""
     global _current_locale
     if locale not in _CATALOGS:
         raise ValueError(f"unsupported locale: {locale!r}, expected one of {SUPPORTED_LOCALES}")
@@ -34,15 +39,16 @@ def set_locale(locale: str) -> None:
 
 
 def get_locale() -> str:
-    """读取 CLI 场景下的全局默认语言。"""
+    """Get the global default language, for the CLI's use case."""
     return _current_locale
 
 
 def t(key: str, *, lang: str | None = None, **kwargs: Any) -> str:
-    """按 key 取文案并用 kwargs 插值。
+    """Look up the message for `key` and interpolate `kwargs` into it.
 
-    查找顺序：lang(显式传入) 或当前全局语言 -> 该语言 catalog -> 缺失则退回英文 catalog ->
-    仍缺失则返回 key 本身(不炸，方便新 key 还没来得及翻译时也能跑)。
+    Lookup order: lang (if given) or the current global language -> that language's catalog
+    -> falls back to the English catalog if missing -> falls back to the key itself if still
+    missing (never raises, so a key that hasn't been translated yet doesn't break the run).
     """
     locale = lang if lang is not None else _current_locale
     catalog = _CATALOGS.get(locale, _CATALOGS[DEFAULT_LOCALE])
@@ -53,6 +59,6 @@ def t(key: str, *, lang: str | None = None, **kwargs: Any) -> str:
 
 
 def n_(count: int, one_key: str, other_key: str, *, lang: str | None = None, **kwargs: Any) -> str:
-    """英文单复数选择(中文两个 key 通常写成同一句，中文本身不做数量形态变化)。"""
+    """Pick singular/plural for English (the two Chinese keys are usually the same string, since Chinese doesn't inflect for number)."""
     key = one_key if count == 1 else other_key
     return t(key, lang=lang, count=count, **kwargs)

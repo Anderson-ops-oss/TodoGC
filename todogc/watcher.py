@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
+import logging
 import os
-import sys
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -16,6 +16,8 @@ from todogc.config import AppConfig
 from todogc.i18n import n_, t
 from todogc.notify import NotifyError, NtfyChannel
 from todogc.store import Store
+
+logger = logging.getLogger(__name__)
 
 # 心跳/可中断休眠的粒度，与用户可配的 watch_poll_seconds 解耦：如果心跳只在每次真正
 # 轮询时才刷新，一个刚睡下、还没到下一次 poll 的存活 watcher 会被 watch_lock_stale_seconds
@@ -260,7 +262,7 @@ class Watcher:
             now = datetime.now(timezone.utc)
             stale_after = timedelta(seconds=self._config.watch_lock_stale_seconds)
             if not store.try_acquire_watch_lock(self._pid, now, stale_after=stale_after):
-                print(t("watcher.lock.already_running", lang=self._config.lang), file=sys.stderr)
+                logger.warning(t("watcher.lock.already_running", lang=self._config.lang))
                 return
             elapsed = self._config.watch_poll_seconds  # 启动即跑一次，别等一个完整 poll 周期。
             while not self._stop.is_set():
@@ -301,4 +303,4 @@ class Watcher:
         try:
             self._channel.send(title, message, priority=priority, tags=tags)
         except NotifyError as exc:
-            print(t("watcher.push.failed", lang=self._config.lang, title=title, error=exc), file=sys.stderr)
+            logger.warning(t("watcher.push.failed", lang=self._config.lang, title=title, error=exc))

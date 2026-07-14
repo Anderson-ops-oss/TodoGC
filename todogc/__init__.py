@@ -1,4 +1,4 @@
-# __init__.py —— todogc 包入口：把领域模型、存储、回收器聚合成一个干净的公共 API。
+# __init__.py — package entry point: aggregates the domain model, store, and collector into one clean public API.
 
 from __future__ import annotations
 

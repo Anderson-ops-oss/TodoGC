@@ -1,4 +1,4 @@
-# en.py —— 英文文案目录，作为整个项目文案的参照源(key 的存在性以这份为准)。
+# en.py — the English message catalog; the source of truth for which keys exist across the project.
 
 from __future__ import annotations
 
