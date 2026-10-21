@@ -26,7 +26,7 @@ from todogc.notify import NotifyError, NtfyChannel
 from todogc.store import GCRun, Store
 from todogc.watcher import TickEvent, TickResult, Watcher, run_tick
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "__version__",

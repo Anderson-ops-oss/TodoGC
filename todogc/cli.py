@@ -558,6 +558,7 @@ def cmd_restore(store: Store, args: argparse.Namespace) -> int:
                 raise ValueError(_t("cli.restore.invalid_root", root_id=args.root_id))
             if args.root_id == args.id:
                 raise ValueError(_t("cli.restore.self_link"))
+            store.validate_parent(args.id, args.root_id)
             t.root_id = args.root_id
         except ValueError as exc:
             print(_t("cli.error", error=exc), file=sys.stderr)

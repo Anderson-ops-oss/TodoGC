@@ -29,7 +29,7 @@ def completion_app(tmp_path, monkeypatch):
 
 def test_web_completes_child_then_reopens_with_history(completion_app):
     app, db = completion_app
-    app.selectbox(key="task_manager_id").select(2).run()
+    app.button(key="tree_select_2").click().run()
     app.text_input(key="event_note_2").set_value("Published").run()
     app.button(key="done_2").click().run()
     assert not app.exception
@@ -37,7 +37,7 @@ def test_web_completes_child_then_reopens_with_history(completion_app):
         assert store.get_task(2, record_view=False).state is State.DONE
         assert store.touches(2)[-1].note == "Published"
         assert store.heap_size() == 1
-    assert app.selectbox(key="task_manager_id").value == 1
+    assert app.session_state["selected_task_id"] == 1
     assert app.button(key="reopen_2").label == "Reopen"
     app.button(key="reopen_2").click().run()
     assert not app.exception

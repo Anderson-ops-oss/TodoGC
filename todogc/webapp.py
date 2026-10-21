@@ -14,11 +14,12 @@ from todogc import report
 from todogc.cli import HEAP_MAX, run_ceremony  # shared -Xmx default and the ceremony's pure-logic core
 from todogc.collector import Collector, GCPolicy, GCResult
 from todogc.config import AppConfig, load_config
-from todogc.heap import ReferenceStrength, State, TouchKind
+from todogc.heap import ReferenceStrength, State, Task, TouchKind
 from todogc.i18n import SUPPORTED_LOCALES
 from todogc.i18n import t as _t
 from todogc.report import HeapRow, RowKind
 from todogc.store import Store
+from todogc.tree import TaskTree, build_task_tree
 from todogc.watcher import Watcher
 
 if TYPE_CHECKING:
@@ -307,7 +308,14 @@ def _render_add(store: Store, heap_max: int, now: datetime, *, lang: str) -> Non
         st.subheader(_t("webapp.add.subheader", lang=lang))
         title = st.text_input(_t("webapp.field.title", lang=lang))
         is_root = st.checkbox(_t("webapp.add.root_checkbox", lang=lang))
-        root_id = st.number_input(_t("webapp.add.root_id_label", lang=lang), min_value=0, value=0, step=1)
+        parents = {
+            task.persisted_id: task for task in store.list_tasks(active_only=True, record_view=False)
+        }
+        root_id = st.selectbox(
+            _t("webapp.tree.add_parent", lang=lang), [0, *parents],
+            format_func=lambda value: f"#{value} {parents[value].title}" if value else _t("webapp.tree.no_parent", lang=lang),
+            key="add_parent",
+        )
         meta = st.checkbox(_t("webapp.add.meta_checkbox", lang=lang))
         ref_strength = st.selectbox(
             _t("webapp.field.ref_strength", lang=lang), [r.value for r in ReferenceStrength], index=1
@@ -327,7 +335,7 @@ def _render_add(store: Store, heap_max: int, now: datetime, *, lang: str) -> Non
         return
     try:
         t = store.add_task(
-            title.strip(), root_id=(int(root_id) or None), is_root=is_root, meta=meta,
+            title.strip(), root_id=root_id or None, is_root=is_root, meta=meta,
             ref_strength=ref_strength or ReferenceStrength.SOFT, ts=now,
         )
     except ValueError as exc:
@@ -375,21 +383,99 @@ def _render_graveyard(store: Store, now: datetime, *, lang: str) -> None:
             st.rerun()
 
 
-def _render_task_manager(store: Store, now: datetime, *, lang: str) -> None:
-    """Task details, edit, progress, snooze, linking, and the event timeline."""
-    tasks = [t for t in store.list_tasks(record_view=False) if t.state.is_active]
-    if not tasks:
-        st.caption(_t("webapp.task_manager.empty", lang=lang))
-        return
-    by_id = {t.persisted_id: t for t in tasks}
-    selected_value = st.selectbox(
-        _t("webapp.task_manager.select_label", lang=lang),
-        list(by_id), format_func=lambda tid: f"#{tid} {by_id[tid].title}", key="task_manager_id"
+def _parent_options(store: Store, task_id: int) -> dict[int, Task]:
+    excluded = {task_id, *(task.persisted_id for task in store.descendants(task_id))}
+    return {
+        task.persisted_id: task for task in store.list_tasks(active_only=True, record_view=False)
+        if task.persisted_id not in excluded
+    }
+
+
+def _select_tree_task(task_id: int) -> None:
+    st.session_state["selected_task_id"] = task_id
+
+
+def _toggle_tree_node(task_id: int) -> None:
+    collapsed = set(st.session_state.get("tree_collapsed", set()))
+    if task_id in collapsed:
+        collapsed.remove(task_id)
+    else:
+        collapsed.add(task_id)
+    st.session_state["tree_collapsed"] = collapsed
+
+
+def _render_tree_nodes(tree: TaskTree, root_ids: set[int], selected: int, *, lang: str) -> None:
+    collapsed = set(st.session_state.get("tree_collapsed", set()))
+    # Pixel-based indentation keeps nested rows readable when Streamlit stacks the
+    # surrounding tree/detail columns on narrow screens. No task text enters CSS.
+    row_styles = []
+    for group in tree.groups:
+        for task, depth, _ in tree.rows(group, collapsed):
+            row_styles.append(
+                '[data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] > '
+                '[data-testid="stVerticalBlock"] > '
+                f'.st-key-tree_select_{task.persisted_id}) '
+                f'{{ grid-template-columns: {min(depth, 6) * 16}px 24px minmax(0, 1fr); }}'
+            )
+    st.markdown("<style>" + "\n".join(row_styles) + "</style>", unsafe_allow_html=True)
+    if tree.repaired_cycles:
+        st.warning(_t("webapp.tree.legacy_cycle", lang=lang))
+    for group, ids in tree.groups.items():
+        if not ids:
+            continue
+        st.caption(_t(f"webapp.tree.group.{group}", lang=lang))
+        for task, depth, has_children in tree.rows(group, collapsed):
+            tid = task.persisted_id
+            indent = min(depth, 6)
+            spacer, toggle, node = st.columns([indent + 0.1, 0.8, 12 - indent])
+            if depth > 6:
+                spacer.caption(f"+{depth - 6}")
+            if has_children:
+                toggle.button(
+                    "▸" if tid in collapsed else "▾", key=f"tree_toggle_{tid}",
+                    help=_t("webapp.tree.expand" if tid in collapsed else "webapp.tree.collapse", lang=lang),
+                    on_click=_toggle_tree_node, args=(tid,),
+                )
+            else:
+                toggle.caption("·")
+            marker = "✓" if task.state is State.DONE else "★" if tid in root_ids else "⊛" if task.is_meta else "○"
+            generation = _t(f"webapp.tree.generation.{task.gen.value}", lang=lang)
+            node.button(
+                f"{marker} #{tid} {task.title}", key=f"tree_select_{tid}",
+                type="primary" if tid == selected else "secondary", use_container_width=True,
+                help=generation, on_click=_select_tree_task, args=(tid,),
+            )
+
+
+def _render_selected_completed(store: Store, task: Task, heap_max: int, now: datetime, *, lang: str) -> None:
+    tid = task.persisted_id
+    st.caption(_t("webapp.completed.timestamp", lang=lang, time=task.completed_at.isoformat() if task.completed_at else "-"))
+    parents = _parent_options(store, tid)
+    choices = [0, *parents]
+    parent = st.selectbox(
+        _t("webapp.tree.reopen_parent", lang=lang), choices,
+        index=choices.index(task.root_id) if task.root_id in choices else 0,
+        format_func=lambda value: f"#{value} {parents[value].title}" if value else _t("webapp.tree.keep_parent", lang=lang),
+        key=f"tree_reopen_parent_{tid}",
     )
-    if selected_value is None:
-        return
-    selected = int(selected_value)
-    task = by_id[selected]
+    if st.button(_t("webapp.completed.reopen", lang=lang), key=f"tree_reopen_{tid}"):
+        try:
+            store.reopen_task(tid, root_id=parent or None, heap_max=heap_max, ts=now)
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+    _render_task_history(store, tid, lang=lang)
+
+
+def _render_task_history(store: Store, task_id: int, *, lang: str) -> None:
+    touches = store.touches(task_id)
+    with st.expander(_t("webapp.task_manager.timeline_expander", lang=lang, count=len(touches))):
+        for touch in reversed(touches):
+            st.code(f"{touch.ts.isoformat()}  {touch.kind.value}" + (f" · {touch.note}" if touch.note else ""), language=None)
+
+
+def _render_task_details(store: Store, task: Task, heap_max: int, now: datetime, *, lang: str) -> None:
+    """Operate on the selected node; selection and browsing never record view events."""
     task_id = task.persisted_id
     c0, c1 = st.columns(2)
     title = c0.text_input(_t("webapp.field.title", lang=lang), value=task.title, key=f"edit_title_{task_id}")
@@ -429,16 +515,37 @@ def _render_task_manager(store: Store, now: datetime, *, lang: str) -> None:
         except ValueError as exc:
             st.error(str(exc))
 
-    parent = st.number_input(
-        _t("webapp.task_manager.parent_label", lang=lang), min_value=0, value=int(task.root_id or 0), step=1,
+    parents = _parent_options(store, task_id)
+    options = [0, *parents]
+    parent = st.selectbox(
+        _t("webapp.tree.move_to", lang=lang), options,
+        index=options.index(task.root_id) if task.root_id in options else 0,
+        format_func=lambda value: f"#{value} {parents[value].title}" if value else _t("webapp.tree.no_parent", lang=lang),
         key=f"parent_{task_id}",
     )
-    if st.button(_t("webapp.task_manager.link_button", lang=lang), key=f"link_{task_id}"):
+    if st.button(_t("webapp.tree.move_button", lang=lang), key=f"link_{task_id}"):
         try:
-            store.unlink(task_id, ts=now) if int(parent) == 0 else store.link(task_id, int(parent), ts=now)
+            store.unlink(task_id, ts=now) if not parent else store.link(task_id, parent, ts=now)
+            st.session_state["tree_collapsed"] = set()
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
+
+    with st.form(f"subtask_{task_id}", clear_on_submit=True):
+        st.caption(_t("webapp.tree.add_under", lang=lang, id=task_id, title=task.title))
+        subtask_title = st.text_input(_t("webapp.tree.subtask_title", lang=lang), key=f"subtask_title_{task_id}")
+        add_subtask = st.form_submit_button(_t("webapp.tree.add_subtask", lang=lang))
+    if add_subtask:
+        if store.heap_size() >= heap_max:
+            st.error(_t("webapp.add.heap_full", lang=lang, size=store.heap_size(), max=heap_max))
+        else:
+            try:
+                child = store.add_task(subtask_title, root_id=task_id, ts=now)
+                st.session_state["selected_task_id"] = child.persisted_id
+                st.session_state["tree_collapsed"] = set()
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
 
     dep_id = st.number_input(
         _t("webapp.task_manager.dep_id_label", lang=lang), min_value=1, value=1, step=1, key=f"dep_{task_id}"
@@ -458,13 +565,58 @@ def _render_task_manager(store: Store, now: datetime, *, lang: str) -> None:
     deps_text = ", ".join(f"#{ref}" for ref in deps) if deps else _t("webapp.task_manager.deps_none", lang=lang)
     st.caption(_t("webapp.task_manager.deps_prefix", lang=lang, deps=deps_text))
 
-    with st.expander(_t("webapp.task_manager.timeline_expander", lang=lang, count=len(store.touches(task_id)))):
-        for touch in reversed(store.touches(task_id)):
-            st.code(
-                f"{touch.ts.isoformat()}  {touch.kind.value}"
-                + (f" · {touch.note}" if touch.note else ""),
-                language=None,
-            )
+    _render_task_history(store, task_id, lang=lang)
+
+
+def _render_task_tree(store: Store, heap_max: int, now: datetime, *, lang: str) -> None:
+    # Scope layout rules to keyed tree controls; leave the rest of Streamlit unchanged.
+    st.markdown(
+        """<style>
+        [class*="st-key-tree_select_"] button,
+        [class*="st-key-tree_select_"] button > div,
+        [class*="st-key-tree_select_"] [data-testid="stMarkdownContainer"] {
+            justify-content: flex-start; text-align: left;
+        }
+        [class*="st-key-tree_select_"] button { min-height: 2rem; }
+        [class*="st-key-tree_select_"] button[kind="secondary"] {
+            border-color: transparent; background: transparent;
+        }
+        [class*="st-key-tree_toggle_"] button {
+            padding: 0; min-width: 1.5rem; min-height: 2rem;
+            border-color: transparent; background: transparent;
+        }
+        [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] >
+            [data-testid="stVerticalBlock"] > [class*="st-key-tree_select_"]) {
+            display: grid; gap: .25rem; align-items: center;
+        }
+        [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] >
+            [data-testid="stVerticalBlock"] > [class*="st-key-tree_select_"])
+            > [data-testid="stColumn"] { min-width: 0; width: 100%; }
+        </style>""", unsafe_allow_html=True,
+    )
+    show_completed = st.checkbox(_t("webapp.tree.show_completed", lang=lang), key="tree_show_completed")
+    roots = store.root_ids(active_only=False)
+    tree = build_task_tree(store.list_tasks(record_view=False), roots, show_completed=show_completed)
+    if not tree.tasks:
+        st.info(_t("webapp.tree.empty", lang=lang))
+        return
+    selected = st.session_state.get("selected_task_id")
+    if selected not in tree.tasks:
+        selected = next(tid for ids in tree.groups.values() for tid in ids)
+        st.session_state["selected_task_id"] = selected
+    left, right = st.columns([4, 6], gap="large")
+    with left:
+        _render_tree_nodes(tree, roots, selected, lang=lang)
+    with right:
+        task = tree.tasks[selected]
+        st.text(f"#{task.id} {task.title}")
+        st.caption(_t("webapp.tree.path", lang=lang))
+        st.text(" / ".join(f"#{item.id} {item.title}" for item in tree.path(selected)))
+        st.caption(_t("webapp.tree.generation_label", lang=lang, name=_t(f"webapp.tree.generation.{task.gen.value}", lang=lang)))
+        if task.state is State.DONE:
+            _render_selected_completed(store, task, heap_max, now, lang=lang)
+        else:
+            _render_task_details(store, task, heap_max, now, lang=lang)
 
 
 def _render_completed(store: Store, heap_max: int, now: datetime, *, lang: str) -> None:
@@ -539,7 +691,8 @@ def main() -> None:
                 st.caption(_t("webapp.sidebar.watcher_disabled", lang=lang))
             heap_max = int(
                 st.number_input(
-                    _t("webapp.sidebar.heap_max_label", lang=lang), min_value=1, value=_default_heap_max(), step=1
+                    _t("webapp.sidebar.heap_max_label", lang=lang), min_value=1, value=_default_heap_max(), step=1,
+                    key="heap_max",
                 )
             )
             full = st.checkbox(_t("webapp.sidebar.full_checkbox", lang=lang))
@@ -556,7 +709,11 @@ def main() -> None:
             st.divider()
             _render_add(store, heap_max, now, lang=lang)
 
-        st.title(_t("webapp.main.heap_title", lang=lang))
+        st.title(_t("webapp.tree.title", lang=lang))
+        _render_task_tree(store, heap_max, now, lang=lang)
+
+        st.divider()
+        st.subheader(_t("webapp.main.heap_title", lang=lang))
         result = _gc(store, now, policy)
         roots = store.root_ids()
         _render_heap(result, roots, heap_max, lang=lang)
@@ -572,9 +729,6 @@ def main() -> None:
         _render_ceremony(
             store, result, now, mode=policy.mode, heap_before=store.heap_size(), lang=lang
         )
-
-        st.subheader(_t("webapp.main.task_manager_subheader", lang=lang))
-        _render_task_manager(store, now, lang=lang)
 
         st.subheader("Leak Inspector · doctor")
         st.code(report.format_doctor(store, result, now=now, lang=lang), language=None)

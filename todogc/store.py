@@ -430,10 +430,8 @@ class Store:
         Returns:
             None
         """
-        if task_id == root_id:
-            raise ValueError(_t("store.error.self_link"))
         self._require_live_task(task_id)
-        self._require_live_task(root_id)
+        self.validate_parent(task_id, root_id)
         self._conn.execute("UPDATE task SET root_id = ? WHERE id = ?", (root_id, task_id))
         self.record(task_id, TouchKind.LINK, ts=ts)
         self._conn.commit()
@@ -505,8 +503,8 @@ class Store:
             raise ValueError(_t("store.error.task_already_done", id=task_id))
         return task
 
-    def active_descendants(self, task_id: int) -> list[Task]:
-        """Find unfinished descendants, including nested children, without looping on cycles."""
+    def descendants(self, task_id: int) -> list[Task]:
+        """Find descendants in every state, without looping on legacy parent cycles."""
         rows = self._conn.execute(
             """WITH RECURSIVE subtree(id) AS (
                 SELECT id FROM task WHERE id = ?
@@ -514,10 +512,21 @@ class Store:
                 SELECT t.id FROM task t JOIN subtree s ON t.root_id = s.id
             )
             SELECT t.* FROM task t JOIN subtree s ON t.id = s.id
-            WHERE t.id != ? AND t.state IN (?, ?) ORDER BY t.id""",
-            (task_id, task_id, State.LIVE.value, State.CANDIDATE.value),
+            WHERE t.id != ? ORDER BY t.id""",
+            (task_id, task_id),
         ).fetchall()
         return [self._row_to_task(row) for row in rows]
+
+    def active_descendants(self, task_id: int) -> list[Task]:
+        return [task for task in self.descendants(task_id) if task.state.is_active]
+
+    def validate_parent(self, task_id: int, parent_id: int) -> None:
+        """Validate a containment link; dependency edges remain a separate graph."""
+        if task_id == parent_id:
+            raise ValueError(_t("store.error.self_link"))
+        self._require_live_task(parent_id)
+        if any(task.persisted_id == parent_id for task in self.descendants(task_id)):
+            raise ValueError(_t("store.error.parent_cycle"))
 
     def complete_task(
         self, task_id: int, *, with_subtasks: bool = False,
@@ -562,6 +571,7 @@ class Store:
                 target = self.get_task(parent, record_view=False)
                 if target is None or not target.state.is_active:
                     raise ValueError(_t("store.error.reopen_parent_inactive", id=parent))
+                self.validate_parent(task_id, parent)
             if not force and not task.is_meta and self.heap_size() >= heap_max:
                 raise ValueError(_t("store.error.reopen_heap_full", max=heap_max))
             iso = self._to_iso(ts or self._now())
@@ -595,16 +605,22 @@ class Store:
         self._conn.execute("UPDATE task SET is_root = ? WHERE id = ?", (int(is_root), task_id))
         self._conn.commit()
 
-    def root_ids(self) -> set[int]:
-        """Get the id set of all currently active GC roots (the starting points for the liveness mark).
+    def root_ids(self, *, active_only: bool = True) -> set[int]:
+        """Get declared root IDs, excluding inactive roots by default for GC.
+
+        Args:
+            active_only (bool): False includes historical roots for the completed task tree.
 
         Returns:
             set[int]: ids of tasks with is_root true (may be empty).
         """
-        rows = self._conn.execute(
-            "SELECT id FROM task WHERE is_root = 1 AND state IN (?, ?)",
-            (State.LIVE.value, State.CANDIDATE.value),
-        ).fetchall()
+        if active_only:
+            rows = self._conn.execute(
+                "SELECT id FROM task WHERE is_root = 1 AND state IN (?, ?)",
+                (State.LIVE.value, State.CANDIDATE.value),
+            ).fetchall()
+        else:
+            rows = self._conn.execute("SELECT id FROM task WHERE is_root = 1").fetchall()
         return {int(r["id"]) for r in rows}
 
     def add_dep(self, task_id: int, ref_id: int) -> None:

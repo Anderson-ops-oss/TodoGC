@@ -46,6 +46,9 @@ pip install -e ".[web]"     # 想要 Web 端(Streamlit 堆内存图 + add/gc/res
 todogc add "这季度上线支付重构" --root     # #1 声明一个活跃目标(GC root)
 todogc add "写对账模块" --root-id 1         # #2 挂到目标 #1 下
 todogc progress 2 "完成核心逻辑"            # 真推进(+1 refcount)
+todogc done 2 "已发布"                     # 标记完成并释放容量
+todogc completed                            # 查看已完成任务和完成时间
+todogc reopen 2                             # 重新打开已完成任务
 
 todogc add "学 Rust"                         # #3 ┐ 互相担保的一对僵尸
 todogc add "用 Rust 重写博客"                # #4 ┘
@@ -56,7 +59,7 @@ todogc ls                                    # 看看你的堆
 todogc heap                                  # 堆内存图：分代分布 + -Xmx 占用 + 僵尸标红(别名 jmap)
 todogc web                                   # 把这张堆图搬进浏览器 + 交互(需 [web]，见下)
 todogc watch                                 # 定时体检：状态跃迁/堆占用告警时推 ntfy(需 [notify]，见下)
-todogc --lang zh gc                          # 输出语言切换为中文(默认英文，见下 v0.4)
+todogc --lang zh gc                          # 可选中文输出，默认英文
 todogc gc                                    # 触发回收 + Stop-the-world 仪式
 todogc gc --dry-run                          # 只出报告，不进仪式
 todogc graveyard                             # 悼词墙：看看你都埋了什么
@@ -124,7 +127,7 @@ todogc web                 # 起本地服务、浏览器打开(--port 改端口)
 
 Web 端是可选的：没装 `streamlit`，`todogc web` 只会友好提示去装，绝不影响其它命令；浏览器里的自动刷新不算「查看」（不虚增 view 埋点）。
 
-## v0.2：策略、引用强度与认知泄漏诊断
+## 策略、引用强度与认知泄漏诊断
 
 项目目录可放一个 `todogc.toml`（完整样例见 `todogc.toml.example`）：
 
@@ -146,7 +149,7 @@ max = 50
 数据库会自动从旧版迁移到 schema v5；迁移文件库前先生成同目录 `.bak`。真实执行的 GC
 写入审计历史，`heap` 与 `gc --dry-run` 始终只读。
 
-## v0.3：定时体检(ntfy 推送)
+## 定时体检(ntfy 推送)
 
 `todogc watch` 让判活不用你手动敲命令去看——按 `todogc.toml` 的 `[notify]`/`[watch]` 配置
 （完整字段见 `todogc.toml.example`），轮询判活、状态跃迁时推 [ntfy](https://ntfy.sh) 通知：
@@ -178,7 +181,7 @@ heap_threshold_pct = 80          # 堆占用告警阈值(%)
 `notify.ntfy_enabled`)，它会在 web 服务进程里自动带一条同款后台线程，此时再手动开
 `todogc watch` 会检测到锁被占用、自动放弃，不会对同一份跃迁重复推送两遍。
 
-## v0.4：中英文双语(i18n)
+## 语言
 
 默认输出语言是**英文**；中文作为可选语言，三种途径切换，优先级从高到低(`--lang` >
 环境变量 > 配置文件 > 默认值)：
@@ -199,14 +202,54 @@ lang = "zh"                          # 3) todogc.toml 里的持久化默认值
 则会正确地跟着配置文件走。
 
 Web 端(`todogc web`)不读上面这套——它有自己的**按浏览器 session** 的语言切换器(侧栏
-顶部的 `Language / 语言` 下拉框)，默认值取自 `todogc.toml` 的 `[i18n] lang`，但切换只
+顶部的 `Language` 下拉框)，默认值取自 `todogc.toml` 的 `[i18n] lang`，但切换只
 影响当前 session，不会写回配置文件、也不会影响其他人同时打开的页面。后台 `todogc watch`
 推送用的语言只认 `[i18n] lang`(或 `TODOGC_LANG`)，跟 Web 端 UI 显示语言是两回事——这样
 多人同时开着 Web 端也不会互相改到别人的推送语言。
 
-> 目前覆盖 CLI 输出与 `--help` 文案、Web 端界面文案、ntfy 推送文案、配置/存储层报错信息。
-> GC 日志、堆内存图、`doctor`/`stats` 的具体输出内容(`report.py`)暂时保留原样，不受
-> `--lang` 影响——这块还没做，欢迎 PR。
+> 英文是主要语言，报表、分代名称、空状态和语言选择器均默认使用英文。中文是可选扩展；
+> 选择中文后，部分诊断和统计字段仍使用英文。用户输入的标题与备注保留原语言。
+
+## 完成与重新打开任务
+
+`done` 表示成功完成，`collect` 表示决定放弃。两者都会退出活跃堆，但已完成任务进入
+**Completed**，不会进入墓园；完成时间与推进历史会保留。
+
+```bash
+todogc done 2 "文档已发布"
+todogc completed
+todogc ls --state done
+todogc reopen 2
+todogc reopen 2 --root-id 3
+```
+
+普通 `ls` 只展示活跃任务，也只为这些任务增加 view。已完成任务不参与 GC、doctor 或 watch
+检查，需重新打开后才能继续推进、编辑或推迟。重新打开保留分代、Root 身份和历史，并提供
+默认 7 天宽限期；它会检查容量，也不会自动重新打开子任务。
+
+父任务仍有未完成后代时，`done` 会列出它们并拒绝修改。可以逐个完成、重新关联到其他目标，
+或明确选择一起完成：
+
+```bash
+todogc done 1 --with-subtasks
+```
+
+网页端对应 **Mark as done**、包含未完成子任务的勾选项，以及 **Completed / Reopen**。
+完成最后一个子任务不会自动完成父目标。
+
+## 任务树
+
+`todogc web` 首屏显示任务树和详情面板。点击箭头展开、收起多层子任务，点击节点查看路径、
+分代和操作历史；窄屏下树与详情上下排列。
+
+- **Goals / Unlinked / Meta-tasks** 分组展示顶层任务，树的层级只使用父子关联，不使用理由边。
+- **Add subtask** 在当前活跃任务下新增子任务，自动选择新节点，并遵守容量限制。
+- **Move to** 按编号和名称选择活跃父任务，排除自己和后代；选择无父任务可解除关联。
+- **Show completed** 显示带完成标记的节点，可查看历史或重新打开。
+- 浏览、选择、展开和收起任务树都不会增加 view 计数。
+
+侧栏新增任务也可按名称选择父任务。CLI 和网页端都阻止新增父子循环；历史循环会显示警告，
+允许通过移动或解除关联来修复。父任务不可用的任务会显示在顶层，避免丢失访问入口。
 
 ## 判活规则
 
@@ -236,8 +279,9 @@ todogc/
   report.py     JVM 风格 GC 日志 + 堆内存图(heap_view 视图模型，CLI/Web 共用) + 候选 + 打脸
   notify.py     ntfy 推送渠道(JSON 发布，零依赖，纯 urllib)
   watcher.py    定时体检核心：事件驱动 + 去抖 + 心跳摘要 + 单实例建议性锁
+  tree.py       只读任务树、路径、分组与历史循环处理
   cli.py        命令行 + Stop-the-world 回收仪式 + todogc watch + --lang
-  webapp.py     Streamlit Web 端(堆内存图 + add/gc/restore 交互 + 自动挂载 watcher + 语言切换，可选)
+  webapp.py     Streamlit Web 端(任务树 + 详情 + 堆诊断 + watcher + 语言切换，可选)
 ```
 
 ## 测试
@@ -255,29 +299,16 @@ pytest
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # 产出 dist/todogc-0.5.0-py3-none-any.whl 与 .tar.gz
-pip install dist/todogc-0.5.0-py3-none-any.whl   # 到哪都能装
+python -m build          # 产出 dist/todogc-0.6.0-py3-none-any.whl 与 .tar.gz
+pip install dist/todogc-0.6.0-py3-none-any.whl   # 到哪都能装
 ```
 
 `dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。
 
-## 状态与路线图
+## 路线图
 
-**已实现**：全部 MVP（录入 / 触碰追踪 / 可达性 + 循环引用 / 回收仪式 / 垃圾桶恢复）、JVM 风格 GC 日志、`finalize()` 遗言（含"只能复活一次"）、分代打脸、Metaspace 元任务、`-Xmx` 堆容量约束（`add` 满则触发 Allocation Failure、绝不自动删）、`rich` 彩色输出（可选）、堆内存图（`heap` / `jmap` 分代快照 + -Xmx 占用条 + 僵尸标红）、Web 端（`web`：Streamlit 堆内存图 + add/gc/restore 交互，可选）、标准打包（`python -m build` → wheel / sdist）。
-
-**v0.2 已实现**：数据库迁移与备份、连续推迟/恢复宽限期、strong/soft/weak、
-gentle/normal/aggressive、show/edit/history/link、doctor、GC 历史 stats、Web 任务详情与
-Leak Inspector、输入校验与对抗测试。
-
-**v0.3 已实现**：`todogc watch` 定时体检、ntfy 推送(事件驱动 + 去抖复议期 + 心跳摘要 +
-堆占用告警边沿触发)、单实例建议性锁、Web 端按配置自动挂载后台 watcher 线程。
-
-**v0.4 已实现**：中英文双语，默认英文；`--lang`/环境变量/`todogc.toml` 三级优先级；Web
-端按 session 独立切换语言；CLI 输出、`--help`、Web 界面、ntfy 推送、配置/存储层报错全部
-覆盖(`report.py` 的 GC 日志/堆内存图暂不在内)。
-
-**后续候选（欢迎 PR）**：GitHub Issues/PR 同步、TODO/FIXME 导入、交互式引用图、`report.py`
-的 GC 日志/堆内存图文案纳入 i18n。
+**后续候选（欢迎 PR）**：GitHub Issues/PR 同步、TODO/FIXME 导入、交互式引用图、
+补齐可选中文扩展中的诊断和统计字段翻译。
 
 > 说明：任务的"年龄"目前在**回收仪式里被复活时** +1（即"你逃过它几次"），而非每轮 GC 自动 +1。
 

@@ -75,7 +75,7 @@ todogc edit 3 "Finish Rust chapter 1" --ref weak   # edit + strong/soft/weak
 todogc link 3 1                              # re-link to a parent target; --off to unlink
 todogc doctor                                # Cognitive Leak Detector
 todogc stats --since 30d                     # GC history stats
-todogc --lang zh gc                          # switch output language to Chinese (English is the default, see v0.4 below)
+todogc --lang zh gc                          # optional Chinese output; English is the default
 ```
 
 ### What a `gc --dry-run` looks like
@@ -143,13 +143,13 @@ Same core, same heap map, just moved from the terminal into the browser:
   one-click `restore`
 - **Task details** support edit/progress/snooze/link/dep and the event timeline; **Leak
   Inspector** and GC history share the same source as the CLI
-- A **Language** picker at the top of the sidebar — see [v0.4](#v04-bilingual-en--zh-i18n)
+- A **Language** picker at the top of the sidebar — see [Language](#language)
 
 The Web UI is optional: without `streamlit` installed, `todogc web` just prints a friendly
 install hint and never affects other commands; the browser's auto-refresh doesn't count as
 "viewing" (it doesn't inflate the view counter).
 
-## v0.2: Policies, Reference Strength & Cognitive Leak Diagnosis
+## Policies, Reference Strength & Cognitive Leak Diagnosis
 
 The project directory can hold a `todogc.toml` (full example in `todogc.toml.example`):
 
@@ -174,7 +174,7 @@ The database auto-migrates from older schemas to v5; a `.bak` is generated along
 the file before migrating. A real GC run writes to the audit history; `heap` and
 `gc --dry-run` are always read-only.
 
-## v0.3: Scheduled Checkup (ntfy push)
+## Scheduled Checkup (ntfy push)
 
 `todogc watch` means you don't have to manually run a command to check on things —
 per the `[notify]`/`[watch]` config in `todogc.toml` (full fields in
@@ -214,7 +214,7 @@ background thread inside the web server process; manually starting `todogc watch
 on top of that will detect the lock is held and back off, so the same transition
 never gets pushed twice.
 
-## v0.4: Bilingual (EN / ZH) i18n
+## Language
 
 The default output language is **English**; Chinese is available as an opt-in, switched
 via three routes, in priority order (`--lang` > environment variable > config file >
@@ -248,7 +248,7 @@ once can't change each other's push language.
 > and the language picker. Chinese is available as an optional extension. Some diagnostic
 > and stats labels remain in English when Chinese is selected.
 
-## v0.5: Complete and reopen tasks
+## Complete and reopen tasks
 
 Completion means the work succeeded; collection means you decided to let it go.
 Both leave the active heap, but completed tasks appear in **Completed**, never the graveyard.
@@ -288,6 +288,30 @@ allows over-allocation. Completing and reopening never delete audit history.
 
 Existing databases migrate to schema v5 on first open, with a `.bak` created before migration.
 
+## Task tree
+
+`todogc web` opens with a task tree and a detail panel. Use the arrows to expand or
+collapse nested tasks; select a node to see its path, generation, history and actions.
+On narrow screens the tree appears above the detail panel.
+
+- **Goals**, **Unlinked**, and **Meta-tasks** group top-level tasks. Nested tasks follow
+  their parent links; dependency/reason edges do not change the hierarchy.
+- **Add subtask** creates a task under the selected active task and selects it immediately.
+  It follows the same heap-capacity rules as ordinary allocation.
+- **Move to** lists active parents by ID and title, excluding the current task and its
+  descendants. Select **No parent (unlinked)** to detach a task, then click **Move task**.
+  Moving a goal retains its root identity; a linked goal is shown under its actual parent.
+- **Show completed** reveals completed nodes with a check mark. Select one to view its
+  completion history or reopen it. Marking a parent done still requires explicit consent
+  to include unfinished descendants.
+- Browsing, selecting, expanding and collapsing the tree never adds view events.
+
+The sidebar's parent picker also uses task names, so task IDs do not need to be memorized.
+Parent cycles are rejected in both the Web UI and CLI. Older cyclic parent links remain
+visible with a warning and can be repaired by moving a task or unlinking it. Tasks whose
+parent is unavailable are shown at the top level so they remain accessible. The tree uses
+the existing schema v5; no additional database migration is required.
+
 ## Aliveness Rule
 
 A task is judged **alive** if and only if:
@@ -307,6 +331,18 @@ reaches a root gets collected as a whole — this is exactly the self-deception 
 spot that reference counting can't catch and only reachability analysis can expose.
 All thresholds live in `GCPolicy` — tune them until it's "a little uncomfortably honest".
 
+## Generations
+
+| Region | When a task enters it |
+|---|---|
+| Eden | Created with age 0 |
+| Survivor | Revived during a GC ceremony 1–14 times |
+| Old | Revived during a GC ceremony at least 15 times |
+| Metaspace | Explicitly created as a meta-task; separate from the promotion sequence |
+
+Age increases only when a candidate is revived, not when time passes or GC runs.
+Completing or collecting a task removes it from the active heap; reopening retains its generation.
+
 ## Architecture
 
 ```
@@ -320,8 +356,9 @@ todogc/
   report.py     JVM-style GC log + heap map (heap_view view model, shared by CLI/Web) + candidates + roast
   notify.py     ntfy push channel (JSON publish, zero-dep, plain urllib)
   watcher.py    scheduled-checkup core: event-driven + debounce + heartbeat digest + advisory single-instance lock
+  tree.py       read-only task hierarchy, paths, grouping and legacy-cycle handling
   cli.py        command line + Stop-the-world ceremony + todogc watch + --lang
-  webapp.py     Streamlit Web UI (heap map + add/gc/restore interaction + auto-mounted watcher + language switch, optional)
+  webapp.py     Streamlit Web UI (task tree + details + heap diagnostics + watcher + language switch, optional)
 ```
 
 ## Tests
@@ -340,44 +377,17 @@ Zero core dependencies — packs into a standard wheel/sdist for direct distribu
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # produces dist/todogc-0.5.0-py3-none-any.whl and .tar.gz
-pip install dist/todogc-0.5.0-py3-none-any.whl   # install it anywhere
+python -m build          # produces dist/todogc-0.6.0-py3-none-any.whl and .tar.gz
+pip install dist/todogc-0.6.0-py3-none-any.whl   # install it anywhere
 ```
 
 `dist/`, `build/`, `*.egg-info/` are all in `.gitignore` — build artifacts aren't
 tracked. To include the Web UI: `pip install "todogc[web]"`.
 
-## Status & Roadmap
-
-**Done**: the full MVP (entry / touch tracking / reachability + reference cycles /
-collection ceremony / trash restore), JVM-style GC log, `finalize()` eulogies
-(including "can only revive once"), generational roasting, Metaspace meta-tasks,
-`-Xmx` heap capacity constraint (`add` triggers Allocation Failure when full, never
-auto-deletes), `rich` colored output (optional), heap map (`heap`/`jmap` generational
-snapshot + -Xmx usage bar + zombies in red), Web UI (`web`: Streamlit heap map +
-add/gc/restore interaction, optional), standard packaging (`python -m build` → wheel/sdist).
-
-**v0.2 done**: database migration and backup, consecutive-skip/restore grace period,
-strong/soft/weak, gentle/normal/aggressive, show/edit/history/link, doctor, GC history
-stats, Web task details and Leak Inspector, input validation and adversarial tests.
-
-**v0.3 done**: `todogc watch` scheduled checkup, ntfy push (event-driven + debounce
-remind period + heartbeat digest + edge-triggered heap alerts), advisory
-single-instance lock, Web UI auto-mounts a background watcher thread per config.
-
-**v0.4 done**: bilingual EN/ZH, English by default; `--lang`/env var/`todogc.toml`
-three-tier precedence; Web UI switches language independently per session; CLI output,
-`--help`, Web UI, ntfy push, and config/store-layer errors are all covered
-(including the GC log and heap map).
-
-**v0.5 done**: task/goal completion, completed archive with timestamps, reopening,
-explicit subtree completion, schema v5 migration, and an English-only default interface.
+## Roadmap
 
 **Candidates for later (PRs welcome)**: GitHub Issues/PR sync, TODO/FIXME import,
 interactive reference graph, finishing optional Chinese translations of diagnostic/stat labels.
-
-> Note: a task's "age" currently only increments **when revived during the collection
-> ceremony** (i.e. "how many times you've dodged it"), not automatically every GC round.
 
 ## License
 
