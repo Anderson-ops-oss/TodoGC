@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 MESSAGES: dict[str, str] = {
+    "cli.help.cmd_tree": "show the task hierarchy without recording views",
+    "cli.tree.title": "Task tree",
+    "cli.tree.empty": "No active tasks. Add a goal or use tree --show-completed.",
     "store.error.parent_cycle": "Cannot move a task under one of its descendants. Choose a parent outside this subtree.",
     "webapp.tree.title": "Tasks",
     "webapp.tree.show_completed": "Show completed",

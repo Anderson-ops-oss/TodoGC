@@ -62,6 +62,8 @@ todogc dep 3 4                                             # #3's reason is #4
 todogc dep 4 3                                             # #4's reason is #3 — a cycle
 
 todogc ls                                    # look at your heap
+todogc tree                                  # parent/child hierarchy; read-only
+todogc tree --show-completed                 # also show completed nodes
 todogc heap                                  # heap map: generational layout + -Xmx usage + zombies in red (alias jmap)
 todogc web                                   # move that heap map into the browser + interaction (needs [web], see below)
 todogc watch                                 # scheduled checkup: push to ntfy on state transitions/heap alerts (needs [notify], see below)
@@ -311,6 +313,22 @@ Parent cycles are rejected in both the Web UI and CLI. Older cyclic parent links
 visible with a warning and can be repaired by moving a task or unlinking it. Tasks whose
 parent is unavailable are shown at the top level so they remain accessible. The tree uses
 the existing schema v5; no additional database migration is required.
+
+The same hierarchy is available in the terminal, without recording views:
+
+```bash
+todogc tree
+todogc tree --show-completed
+```
+
+```text
+Task tree
+
+Goals
+└── ★ #1 Release TodoGC
+    └── ○ #2 Improve the Web UI
+        └── ○ #3 Write tests
+```
 
 ## Aliveness Rule
 

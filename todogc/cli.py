@@ -20,6 +20,7 @@ from todogc.heap import ReferenceStrength, State, TouchKind
 from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES, set_locale
 from todogc.i18n import t as _t
 from todogc.store import Store
+from todogc.tree import format_task_tree
 from todogc.watcher import Watcher
 
 HEAP_MAX = 50  # -Xmx: the max number of tasks you can carry at once, used only for GC log display.
@@ -318,6 +319,14 @@ def cmd_completed(store: Store, args: argparse.Namespace) -> int:
         print(_t("cli.completed.empty"))
     for task in tasks:
         print(f"#{task.id} {task.title}  completed={task.completed_at.isoformat() if task.completed_at else '-'}")
+    return 0
+
+
+def cmd_tree(store: Store, args: argparse.Namespace) -> int:
+    print(format_task_tree(
+        store.list_tasks(record_view=False), store.root_ids(active_only=False),
+        show_completed=args.show_completed,
+    ))
     return 0
 
 
@@ -710,6 +719,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--force", action="store_true", help=_t("cli.help.add_force"))
     p.set_defaults(func=cmd_add)
+
+    p = sub.add_parser("tree", help=_t("cli.help.cmd_tree"))
+    p.add_argument("--show-completed", action="store_true", help=_t("webapp.tree.show_completed"))
+    p.set_defaults(func=cmd_tree)
 
     p = sub.add_parser("root", help=_t("cli.help.cmd_root"))
     p.add_argument("id", type=int)

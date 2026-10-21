@@ -56,6 +56,8 @@ todogc dep 3 4                               # #3 的理由是 #4
 todogc dep 4 3                               # #4 的理由是 #3 —— 成环
 
 todogc ls                                    # 看看你的堆
+todogc tree                                  # 终端任务树，不增加 view
+todogc tree --show-completed                 # 同时显示已完成节点
 todogc heap                                  # 堆内存图：分代分布 + -Xmx 占用 + 僵尸标红(别名 jmap)
 todogc web                                   # 把这张堆图搬进浏览器 + 交互(需 [web]，见下)
 todogc watch                                 # 定时体检：状态跃迁/堆占用告警时推 ntfy(需 [notify]，见下)
@@ -250,6 +252,9 @@ todogc done 1 --with-subtasks
 
 侧栏新增任务也可按名称选择父任务。CLI 和网页端都阻止新增父子循环；历史循环会显示警告，
 允许通过移动或解除关联来修复。父任务不可用的任务会显示在顶层，避免丢失访问入口。
+
+终端使用 `todogc tree` 查看同样的父子层级，`todogc tree --show-completed` 同时显示已完成节点；
+两个命令都不会增加 view。
 
 ## 判活规则
 

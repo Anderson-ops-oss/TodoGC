@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 MESSAGES: dict[str, str] = {
+    "cli.help.cmd_tree": "显示任务层级，不增加查看计数",
+    "cli.tree.title": "任务树",
+    "cli.tree.empty": "暂无活跃任务，请添加目标或用 tree --show-completed 显示已完成任务。",
     "store.error.parent_cycle": "不能将任务移动到它的后代任务下面，请选择此子树以外的父任务。",
     "webapp.tree.title": "任务",
     "webapp.tree.show_completed": "显示已完成任务",

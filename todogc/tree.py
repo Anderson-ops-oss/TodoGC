@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from todogc.heap import State, Task
+from todogc.i18n import t as _t
 
 
 @dataclass
@@ -74,3 +76,35 @@ def build_task_tree(tasks: Iterable[Task], root_ids: set[int], *, show_completed
             group = "goals" if tid in root_ids else "meta" if visible[tid].is_meta else "unlinked"
             groups[group].append(tid)
     return TaskTree(visible, parents, dict(children), groups, repaired)
+
+
+def task_label(task: Task, root_ids: set[int], *, now: datetime, lang: str | None = None) -> str:
+    marker = "✓" if task.state is State.DONE else "★" if task.id in root_ids else "⊛" if task.is_meta else "○"
+    text = f"{marker} #{task.id} {task.title}"
+    return text
+
+
+def format_task_tree(
+    tasks: Iterable[Task], root_ids: set[int], *, show_completed: bool = False,
+    now: datetime | None = None, lang: str | None = None,
+) -> str:
+    """Render a terminal tree from the same hierarchy as the Web UI, without recording views."""
+    now = now or datetime.now(timezone.utc)
+    tree = build_task_tree(tasks, root_ids, show_completed=show_completed)
+    if not tree.tasks:
+        return _t("cli.tree.empty", lang=lang)
+    lines = [_t("cli.tree.title", lang=lang)]
+    if tree.repaired_cycles:
+        lines.append(_t("webapp.tree.legacy_cycle", lang=lang))
+    for group, ids in tree.groups.items():
+        if not ids:
+            continue
+        lines.extend(["", _t(f"webapp.tree.group.{group}", lang=lang)])
+        stack = [(tid, "", i == len(ids) - 1) for i, tid in reversed(list(enumerate(ids)))]
+        while stack:
+            tid, prefix, last = stack.pop()
+            lines.append(prefix + ("└── " if last else "├── ") + task_label(tree.tasks[tid], root_ids, now=now, lang=lang))
+            children = tree.children.get(tid, [])
+            child_prefix = prefix + ("    " if last else "│   ")
+            stack.extend((child, child_prefix, i == len(children) - 1) for i, child in reversed(list(enumerate(children))))
+    return "\n".join(lines)
