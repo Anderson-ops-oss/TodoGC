@@ -233,9 +233,7 @@ def cmd_ls(store: Store, args: argparse.Namespace) -> int:
         tasks = [c.task for c in result.candidates]
     else:
         state = State(args.state) if args.state else None
-        tasks = store.list_tasks(state=state)
-        if state is None:
-            tasks = [task for task in tasks if task.state.is_active]
+        tasks = store.list_tasks(state=state, active_only=state is None)
     roots = store.root_ids()
     if console.render_ls(tasks, roots):  # rich installed -> color table
         return 0

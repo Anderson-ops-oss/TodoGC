@@ -699,6 +699,7 @@ class Store:
         self,
         *,
         state: State | None = None,
+        active_only: bool = False,
         record_view: bool = True,
         ts: datetime | None = None,
     ) -> list[Task]:
@@ -706,6 +707,7 @@ class Store:
 
         Args:
             state (State | None): only return tasks in this state; None returns all.
+            active_only (bool): restrict the query to active tasks before recording views.
             record_view (bool): whether to log a VIEW event for the listed tasks; internal
                 scans should pass False.
             ts (datetime | None): the VIEW event time; None uses the current UTC time.
@@ -713,12 +715,16 @@ class Store:
         Returns:
             list[Task]: tasks ordered ascending by id (may be empty).
         """
-        if state is None:
-            rows = self._conn.execute("SELECT * FROM task ORDER BY id").fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT * FROM task WHERE state = ? ORDER BY id", (state.value,)
-            ).fetchall()
+        conditions: list[str] = []
+        params: list[str] = []
+        if state is not None:
+            conditions.append("state = ?")
+            params.append(state.value)
+        if active_only:
+            conditions.append("state IN (?, ?)")
+            params.extend((State.LIVE.value, State.CANDIDATE.value))
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        rows = self._conn.execute("SELECT * FROM task" + where + " ORDER BY id", params).fetchall()
         tasks = [self._row_to_task(r) for r in rows]
         if record_view and tasks:
             iso = self._to_iso(ts or self._now())

@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import pytest
 
+from todogc import console
 from todogc.cli import main
 from todogc.collector import Collector
 from todogc.config import AppConfig
@@ -190,3 +191,39 @@ def test_cli_completion_lists_history_errors_and_reopening(tmp_path, capsys):
     assert run("reopen", "1") == 0
     assert run("reopen", "2") == 0
     assert run("done", "999") == 1
+
+
+@pytest.mark.parametrize("rich", [False, True])
+def test_default_ls_only_records_views_for_displayed_active_tasks(tmp_path, capsys, monkeypatch, rich):
+    if rich:
+        pytest.importorskip("rich")
+    else:
+        monkeypatch.setattr(console, "_HAVE_RICH", False)
+    db = str(tmp_path / "views.db")
+    with Store(db) as store:
+        goal = store.add_task("Completed goal", is_root=True)
+        child = store.add_task("Completed child", root_id=goal.id)
+        store.complete_task(goal.id, with_subtasks=True)
+        active = store.add_task("Active goal", is_root=True)
+        candidate = store.add_task("Active candidate", root_id=active.id)
+        candidate.state = State.CANDIDATE
+        store.update_task(candidate)
+        collected = store.add_task("Collected task")
+        collected.state = State.COLLECTED
+        store.update_task(collected)
+    for expected_views in (1, 2):
+        assert main(["--db", db, "ls"]) == 0
+        output = capsys.readouterr().out
+        assert "Active goal" in output and "Active candidate" in output
+        assert "Completed" not in output and "Collected task" not in output
+        with Store(db) as store:
+            assert store.view_count(active.id) == store.view_count(candidate.id) == expected_views
+            assert store.view_count(goal.id) == store.view_count(child.id) == store.view_count(collected.id) == 0
+    assert main(["--db", db, "ls", "--state", "done"]) == 0
+    output = capsys.readouterr().out
+    assert "Completed goal" in output and "Completed child" in output
+    assert "Active goal" not in output and "Collected task" not in output
+    with Store(db) as store:
+        assert store.view_count(goal.id) == store.view_count(child.id) == 1
+        assert store.view_count(active.id) == store.view_count(candidate.id) == 2
+        assert store.view_count(collected.id) == 0
