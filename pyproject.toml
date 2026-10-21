@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "todogc"
-version = "0.8.0"
+version = "0.9.0"
 description = "Treats your todo list as a program's heap, and uses GC to coldly reclaim the zombie tasks you'll never actually do."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,7 +24,8 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "build>=1.0", "ruff>=0.8", "basedpyright>=1.31"]  # tests, packaging, and static checks
 color = ["rich>=13"]                 # optional: colored output when installed, core doesn't depend on it
-web = ["streamlit>=1.30"]            # optional: the Web UI's heap map + interaction (todogc web)
+web = ["streamlit>=1.30", "Pillow>=10.1"]  # optional: Web UI and PNG review downloads
+export = ["Pillow>=10.1"]           # optional: PNG share cards; SVG needs no dependencies
 
 [project.scripts]
 # Once installed, just type `todogc gc` directly — no need for python -m todogc.cli.

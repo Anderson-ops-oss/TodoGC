@@ -21,6 +21,8 @@ from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES, set_locale
 from todogc.i18n import t as _t
 from todogc.store import Store
 from todogc.scheduling import local_time, parse_snooze_time
+from todogc.review import WeeklyReview, build_review, format_review
+from todogc.review_card import export_review
 from todogc.tree import format_task_tree, task_label
 from todogc.watcher import Watcher
 
@@ -753,6 +755,43 @@ def cmd_stats(store: Store, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review(store: Store, args: argparse.Namespace) -> int:
+    try:
+        if args.list_reviews:
+            if args.export or args.save or args.highlight or args.review_timezone:
+                raise ValueError(_t("review.error.options"))
+            saved = store.saved_reviews()
+            print(_t("review.saved_list", count=len(saved)))
+            for snapshot in saved:
+                print(f"#{snapshot.id}  {snapshot.week_start}  {snapshot.generated_at.isoformat()}")
+            return 0
+        if args.snapshot is not None:
+            if args.review_timezone:
+                raise ValueError(_t("review.error.options"))
+            snapshot = store.saved_review(args.snapshot)
+            if snapshot is None:
+                raise ValueError(_t("review.error.not_found", id=args.snapshot))
+            review = WeeklyReview.from_json(snapshot.payload)
+        else:
+            review = build_review(store, args.week or "this", timezone_name=args.review_timezone or "local")
+        if args.highlight is not None:
+            review = review.with_highlights(args.highlight)
+        if args.export:
+            export_review(review, args.export)
+        print(format_review(review))
+        if args.export:
+            print(_t("review.exported", path=args.export))
+        if args.save:
+            snapshot_id = store.save_review(week_start=review.week_start,
+                                           generated_at=datetime.fromisoformat(review.generated_at),
+                                           payload=review.to_json())
+            print(_t("review.saved", id=snapshot_id))
+    except (ValueError, OSError) as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
+        return 1
+    return 0
+
+
 # ============ Assembly and entry point ============
 
 def build_parser() -> argparse.ArgumentParser:
@@ -916,6 +955,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("stats", help=_t("cli.help.cmd_stats"))
     p.add_argument("--since", type=_days, default=None, help=_t("cli.help.stats_since"))
     p.set_defaults(func=cmd_stats)
+
+    p = sub.add_parser("review", help=_t("review.help.command"))
+    source = p.add_mutually_exclusive_group()
+    source.add_argument("--week", help=_t("review.help.week"))
+    source.add_argument("--snapshot", type=int, help=_t("review.help.snapshot"))
+    source.add_argument("--list", dest="list_reviews", action="store_true", help=_t("review.help.list"))
+    p.add_argument("--timezone", dest="review_timezone", help=_t("review.help.timezone"))
+    p.add_argument("--highlight", type=int, action="append", help=_t("review.help.highlight"))
+    p.add_argument("--export", help=_t("review.help.export"))
+    p.add_argument("--save", action="store_true", help=_t("review.help.save"))
+    p.set_defaults(func=cmd_review)
 
     return parser
 

@@ -50,7 +50,26 @@ CREATE TABLE IF NOT EXISTS dep (
 CREATE INDEX IF NOT EXISTS idx_touch_task ON touch(task_id);
 """
 
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
+
+
+@dataclass(frozen=True)
+class ReviewEvent:
+    task_id: int
+    kind: TouchKind
+    ts: datetime
+    title: str
+    is_goal: bool
+    in_inbox: bool
+    historical_label: bool
+
+
+@dataclass(frozen=True)
+class ReviewSnapshot:
+    id: int
+    week_start: str
+    generated_at: datetime
+    payload: str
 
 
 @dataclass(frozen=True)
@@ -214,6 +233,31 @@ class Store:
             self._conn.execute("ALTER TABLE task ADD COLUMN snoozed_until TEXT")
             self._conn.execute("ALTER TABLE task ADD COLUMN snooze_notified_until TEXT")
             version = 7
+        if version < 8:
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS touch_task_snapshot (
+                    touch_id INTEGER PRIMARY KEY REFERENCES touch(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    is_goal INTEGER NOT NULL,
+                    in_inbox INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_touch_ts ON touch(ts);
+                CREATE TRIGGER IF NOT EXISTS snapshot_new_touch AFTER INSERT ON touch
+                WHEN NEW.kind IN ('done', 'reopen', 'capture', 'organize', 'collect') BEGIN
+                    INSERT INTO touch_task_snapshot(touch_id, title, is_goal, in_inbox)
+                    SELECT NEW.id, title, is_root, inbox_since IS NOT NULL
+                    FROM task WHERE id = NEW.task_id;
+                END;
+                CREATE TABLE IF NOT EXISTS review_snapshot (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    week_start TEXT NOT NULL,
+                    generated_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                );
+                """
+            )
+            version = 8
         self._conn.execute(
             "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -1104,6 +1148,49 @@ class Store:
             )
             for r in rows
         ]
+
+    # ---- weekly review history ----
+
+    def review_events(self, start: datetime, end: datetime) -> list[ReviewEvent]:
+        """Read event-time labels where available; legacy events use current task labels."""
+        rows = self._conn.execute(
+            "SELECT e.task_id, e.kind, e.ts, COALESCE(s.title, t.title) AS title, "
+            "COALESCE(s.is_goal, t.is_root) AS is_goal, "
+            "COALESCE(s.in_inbox, t.inbox_since IS NOT NULL) AS in_inbox, "
+            "s.touch_id IS NOT NULL AS historical_label "
+            "FROM touch e JOIN task t ON t.id = e.task_id "
+            "LEFT JOIN touch_task_snapshot s ON s.touch_id = e.id "
+            "WHERE e.ts >= ? AND e.ts < ? ORDER BY e.ts, e.id",
+            (self._to_iso(start), self._to_iso(end)),
+        ).fetchall()
+        return [ReviewEvent(int(row["task_id"]), TouchKind(row["kind"]), self._from_iso(row["ts"]),
+                            row["title"], bool(row["is_goal"]), bool(row["in_inbox"]),
+                            bool(row["historical_label"])) for row in rows]
+
+    def review_collected_ids(self, start: datetime, end: datetime) -> set[int]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT i.task_id FROM gc_run_item i JOIN gc_run r ON r.id = i.run_id "
+            "WHERE i.action = 'collect' AND r.started_at >= ? AND r.started_at < ?",
+            (self._to_iso(start), self._to_iso(end)),
+        ).fetchall()
+        return {int(row[0]) for row in rows}
+
+    def save_review(self, *, week_start: str, generated_at: datetime, payload: str) -> int:
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO review_snapshot(week_start, generated_at, payload) VALUES (?, ?, ?)",
+                (week_start, self._to_iso(generated_at), payload),
+            )
+        return self._lastrowid(cur)
+
+    def saved_reviews(self) -> list[ReviewSnapshot]:
+        rows = self._conn.execute("SELECT * FROM review_snapshot ORDER BY id DESC").fetchall()
+        return [ReviewSnapshot(int(row["id"]), row["week_start"], self._from_iso(row["generated_at"]),
+                               row["payload"]) for row in rows]
+
+    def saved_review(self, snapshot_id: int) -> ReviewSnapshot | None:
+        row = self._conn.execute("SELECT * FROM review_snapshot WHERE id = ?", (snapshot_id,)).fetchone()
+        return ReviewSnapshot(int(row["id"]), row["week_start"], self._from_iso(row["generated_at"]), row["payload"]) if row else None
 
     # ---- scheduled checkup (watch): state debouncing + single-instance advisory lock ----
 

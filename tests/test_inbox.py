@@ -164,12 +164,15 @@ def test_v5_migration_preserves_existing_locations_and_completion(tmp_path, now)
         orphan = store.add_task("Existing unlinked task", ts=now)
         done = store.add_task("Done", ts=now)
         store.complete_task(done.id, ts=now)
+        store._conn.execute("DROP TRIGGER snapshot_new_touch")
+        store._conn.execute("DROP TABLE touch_task_snapshot")
+        store._conn.execute("DROP TABLE review_snapshot")
         store._conn.execute("ALTER TABLE task DROP COLUMN inbox_since")
         store._conn.execute("ALTER TABLE task DROP COLUMN snoozed_until")
         store._conn.execute("ALTER TABLE task DROP COLUMN snooze_notified_until")
         store._conn.execute("UPDATE schema_meta SET value = '5' WHERE key = 'schema_version'")
     with Store(path) as store:
-        assert store.schema_version == 7
+        assert store.schema_version == 8
         assert all(not task.in_inbox for task in store.list_tasks(record_view=False))
         assert store.get_task(done.id, record_view=False).completed_at == now
         result = Collector().run_on_store(store, store.root_ids(), now=now)

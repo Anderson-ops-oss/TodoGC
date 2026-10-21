@@ -79,6 +79,8 @@ todogc edit 3 "Finish Rust chapter 1" --ref weak   # edit + strong/soft/weak
 todogc link 3 1                              # re-link to a parent target; --off to unlink
 todogc doctor                                # Cognitive Leak Detector
 todogc stats --since 30d                     # GC history stats
+todogc review --week this                    # weekly completion and decluttering review
+todogc review --week last --export weekly.svg # share card; no optional dependencies
 todogc --lang zh gc                          # optional Chinese output; English is the default
 ```
 
@@ -294,6 +296,66 @@ allows over-allocation. Completing and reopening never delete audit history.
 
 Existing databases migrate automatically on first open, with a `.bak` created before migration.
 
+## Weekly review and share cards
+
+Generate a weekly review from task events, then export an English share card for sharing.
+In `todogc web`, choose **Weekly review** in the sidebar, pick a week/timezone, and
+optionally feature up to three completed items. Preview the card, download PNG or SVG,
+or **Save snapshot** to keep the selected data and highlights unchanged.
+
+<img src="docs/weekly-review-example.png" alt="Example TodoGC weekly review card using sample data" width="430">
+
+*Example card with sample data.*
+
+```bash
+todogc review                               # this week so far
+todogc review --week last
+todogc review --week 2026-10-19 --timezone Asia/Tokyo
+todogc review --week last --export weekly.svg
+
+pip install "todogc[export]"                # optional Pillow dependency for PNG
+todogc review --week last --export weekly.png
+```
+
+Weeks run from local Monday midnight through the next Monday, with the end excluded;
+IANA timezones such as `Asia/Tokyo` can override the machine's local timezone. Calendar
+boundaries account for daylight-saving changes. The current week stops at generation
+time and is labeled **In progress**; future weeks are rejected.
+
+- Each task is counted once per week, on its first DONE event that week. Reopening
+  does not erase that finish; reopened tasks are counted separately.
+- Goals and other tasks are separate totals. The daily chart includes both, so its
+  total equals tasks + goals. Completing a whole subtree counts the goal and each
+  completed descendant once; meta-tasks and directly completed ideas count as non-goal tasks.
+- Captured and organized ideas, Inbox discards, and audited GC collections are distinct
+  counts of task IDs within the period. GC dry runs never count as collections.
+- **Task load now** is recorded when generating the review, even when reviewing an
+  earlier week. It partitions unfinished work into active, snoozed and pending Inbox items.
+- Browsing, reviewing and exporting do not write task views, progress or GC runs.
+  The existing `stats` command continues to summarize GC audit history.
+
+Cards contain numbers by default. To include titles, use actual completed IDs listed
+by `review`; repeat `--highlight` up to three times. JSON includes the full review and
+all completed item titles, independently of the highlights chosen for the image.
+
+```bash
+todogc review --week last --highlight 2 --highlight 5 --export weekly.png --save
+todogc review --list
+todogc review --snapshot 1 --export saved-week.svg
+todogc review --snapshot 1 --export saved-week.json
+```
+
+Saved snapshots are stored in the current database and retain counts, names, timezone
+boundaries, the recorded current task load, and selected highlights. New completion
+and discard events preserve their task name, goal role and Inbox location at the time.
+Older events lacking those labels fall back to current task metadata and are identified
+in the review; saving a snapshot freezes the resolved values.
+
+SVG export uses only the standard library. PNG uses Pillow and locally available fonts,
+with an embedded Pillow font as fallback; it needs no browser, API key or external service.
+The `[web]` extra includes PNG support. Both images are 1080 × 1350, generated from the
+same layout and real counts.
+
 ## Scheduled Snooze
 
 Snooze hides a task until a specific time. It remains unfinished, retains its parent,
@@ -481,8 +543,8 @@ Zero core dependencies — packs into a standard wheel/sdist for direct distribu
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # produces dist/todogc-0.8.0-py3-none-any.whl and .tar.gz
-pip install dist/todogc-0.8.0-py3-none-any.whl   # install it anywhere
+python -m build          # produces dist/todogc-0.9.0-py3-none-any.whl and .tar.gz
+pip install dist/todogc-0.9.0-py3-none-any.whl   # install it anywhere
 ```
 
 `dist/`, `build/`, `*.egg-info/` are all in `.gitignore` — build artifacts aren't

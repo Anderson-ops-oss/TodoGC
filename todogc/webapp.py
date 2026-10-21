@@ -7,7 +7,7 @@ from __future__ import annotations
 import html
 import os
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from todogc import report
@@ -18,6 +18,8 @@ from todogc.heap import ReferenceStrength, State, Task, TouchKind
 from todogc.i18n import SUPPORTED_LOCALES
 from todogc.i18n import t as _t
 from todogc.report import HeapRow, RowKind
+from todogc.review import WeeklyReview, build_review, format_review
+from todogc.review_card import render_png, render_svg
 from todogc.store import Store
 from todogc.scheduling import local_time, parse_snooze_time
 from todogc.tree import TaskTree, build_task_tree, task_label
@@ -774,6 +776,83 @@ def _render_completed(store: Store, heap_max: int, now: datetime, *, lang: str) 
                     st.error(str(exc))
 
 
+def _render_weekly_review(store: Store, now: datetime, *, lang: str) -> None:
+    st.title(_t("review.title", lang=lang))
+    st.caption(_t("review.web.intro", lang=lang))
+    saved = {snapshot.id: snapshot for snapshot in store.saved_reviews()}
+    pending = st.session_state.pop("review_saved_notice", None)
+    if pending in saved:
+        st.session_state["review_source"] = pending
+        st.success(_t("review.saved", lang=lang, id=pending))
+    source = st.selectbox(
+        _t("review.web.source", lang=lang), [0, *saved], key="review_source",
+        format_func=lambda value: f"#{value} · {saved[value].week_start}" if value else _t("review.web.new", lang=lang),
+    )
+    controls, preview = st.columns([4, 6], gap="large")
+    with controls:
+        try:
+            if source:
+                review = WeeklyReview.from_json(saved[source].payload)
+                st.caption(_t("review.web.frozen", lang=lang, time=review.generated_local))
+            else:
+                period = st.selectbox(
+                    _t("review.web.week", lang=lang), ["this", "last", "custom"], key="review_week",
+                    format_func=lambda value: _t(f"review.web.week.{value}", lang=lang),
+                ) or "this"
+                week = period
+                if period == "custom":
+                    picked = st.date_input(_t("review.web.date", lang=lang), value=now.astimezone().date(), key="review_date")
+                    if not isinstance(picked, date):
+                        st.info(_t("review.web.choose_date", lang=lang))
+                        return
+                    week = picked.isoformat()
+                zone = st.text_input(_t("review.web.timezone", lang=lang), value="local", key="review_timezone")
+                review = build_review(store, week, timezone_name=zone.strip() or "local", now=now)
+            items = {item.task_id: item for item in review.completions}
+            highlight_ids = st.multiselect(
+                _t("review.web.highlights", lang=lang), list(items), default=list(review.highlight_ids),
+                max_selections=3, disabled=bool(source), key=f"review_highlights_{source or review.week_start + review.timezone_name}",
+                format_func=lambda tid: f"#{tid} {items[tid].title}",
+            )
+            review = review.with_highlights(highlight_ids)
+        except (ValueError, KeyError, TypeError) as exc:
+            st.error(str(exc))
+            return
+        first, second, third = st.columns(3)
+        first.metric(_t("review.web.tasks", lang=lang), review.tasks_completed)
+        second.metric(_t("review.web.goals", lang=lang), review.goals_completed)
+        third.metric(_t("review.web.reopened", lang=lang), review.reopened)
+        st.caption(_t("review.through", lang=lang, time=review.through_local))
+        st.write(_t("review.ideas", lang=lang, captured=review.captured, organized=review.organized))
+        st.write(_t("review.released", lang=lang, reclaimed=review.reclaimed, discarded=review.discarded))
+        st.write(_t("review.inventory", lang=lang, active=review.active_now, snoozed=review.snoozed_now, inbox=review.inbox_now))
+        st.caption(_t("review.inventory_time", lang=lang, time=review.generated_local))
+        with st.expander(_t("review.web.details", lang=lang)):
+            st.code(format_review(review, lang=lang), language=None)
+            st.caption(_t("review.web.counting", lang=lang))
+        if review.legacy_labels:
+            st.caption(_t("review.legacy", lang=lang))
+        if not source and st.button(_t("review.web.save", lang=lang), key="review_save"):
+            snapshot_id = store.save_review(week_start=review.week_start,
+                                           generated_at=datetime.fromisoformat(review.generated_at), payload=review.to_json())
+            st.session_state["review_saved_notice"] = snapshot_id
+            st.rerun()
+        name = f"todogc-review-{review.week_start}"
+        st.download_button(_t("review.web.svg", lang=lang), render_svg(review), f"{name}.svg",
+                           mime="image/svg+xml", key="review_download_svg")
+        try:
+            png = render_png(review)
+        except ValueError as exc:
+            st.caption(str(exc))
+        else:
+            st.download_button(_t("review.web.png", lang=lang), png, f"{name}.png",
+                               mime="image/png", key="review_download_png")
+        st.download_button(_t("review.web.json", lang=lang), review.to_json(), f"{name}.json",
+                           mime="application/json", key="review_download_json")
+    with preview:
+        st.image(render_svg(review).decode("utf-8"), width=540)
+
+
 def main() -> None:
     """Streamlit entry point: assembles the sidebar (add + -Xmx) and the main area (heap map / GC log / ceremony / graveyard).
 
@@ -790,6 +869,8 @@ def main() -> None:
     lang = st.session_state["lang"]
     st.set_page_config(page_title=_t("webapp.page.title", lang=lang), page_icon="🗑️", layout="wide")
     now = datetime.now(timezone.utc)
+    heap_max = _default_heap_max()
+    full = False
     cfg = load_config()
     policy = GCPolicy(
         mode=cfg.gc_mode,
@@ -805,6 +886,10 @@ def main() -> None:
                 _t("webapp.sidebar.language_label", lang=lang), SUPPORTED_LOCALES,
                 format_func=lambda code: _t(f"webapp.language.{code}", lang=lang), key="lang",
             ) or cfg.lang
+            page = st.radio(
+                _t("review.web.navigation", lang=lang), ["tasks", "review"], key="page",
+                format_func=lambda value: _t("webapp.tree.title" if value == "tasks" else "review.title", lang=lang),
+            )
             st.caption(_t("webapp.sidebar.db_caption", lang=lang, db=_db_path()))
             if cfg.ntfy_enabled:
                 _start_watcher(_db_path(), cfg)
@@ -816,25 +901,30 @@ def main() -> None:
                 )
             else:
                 st.caption(_t("webapp.sidebar.watcher_disabled", lang=lang))
-            heap_max = int(
-                st.number_input(
-                    _t("webapp.sidebar.heap_max_label", lang=lang), min_value=1, value=_default_heap_max(), step=1,
-                    key="heap_max",
+            if page == "tasks":
+                heap_max = int(
+                    st.number_input(
+                        _t("webapp.sidebar.heap_max_label", lang=lang), min_value=1, value=_default_heap_max(), step=1,
+                        key="heap_max",
+                    )
                 )
-            )
-            full = st.checkbox(_t("webapp.sidebar.full_checkbox", lang=lang))
-            mode = st.selectbox(
-                _t("webapp.sidebar.mode_label", lang=lang), ["gentle", "normal", "aggressive"],
-                index=["gentle", "normal", "aggressive"].index(cfg.gc_mode),
-            ) or cfg.gc_mode
-            policy = GCPolicy(
-                mode=mode,
-                recent_days=cfg.recent_days,
-                max_skips=cfg.max_consecutive_skips,
-                restore_grace_days=cfg.restore_grace_days,
-            )
-            st.divider()
-            _render_add(store, heap_max, now, lang=lang)
+                full = st.checkbox(_t("webapp.sidebar.full_checkbox", lang=lang))
+                mode = st.selectbox(
+                    _t("webapp.sidebar.mode_label", lang=lang), ["gentle", "normal", "aggressive"],
+                    index=["gentle", "normal", "aggressive"].index(cfg.gc_mode),
+                ) or cfg.gc_mode
+                policy = GCPolicy(
+                    mode=mode,
+                    recent_days=cfg.recent_days,
+                    max_skips=cfg.max_consecutive_skips,
+                    restore_grace_days=cfg.restore_grace_days,
+                )
+                st.divider()
+                _render_add(store, heap_max, now, lang=lang)
+
+        if page == "review":
+            _render_weekly_review(store, now, lang=lang)
+            return
 
         st.title(_t("webapp.tree.title", lang=lang))
         _render_task_tree(store, heap_max, now, lang=lang)

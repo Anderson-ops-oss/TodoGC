@@ -160,11 +160,14 @@ def test_schema_v6_migration_preserves_inbox_and_completion(tmp_path, now):
         goal = store.add_task('Goal', is_root=True, ts=now)
         idea = store.capture('Idea', ts=now)
         store.complete_task(goal.id, ts=now)
+        store._conn.execute("DROP TRIGGER snapshot_new_touch")
+        store._conn.execute("DROP TABLE touch_task_snapshot")
+        store._conn.execute("DROP TABLE review_snapshot")
         store._conn.execute('ALTER TABLE task DROP COLUMN snoozed_until')
         store._conn.execute('ALTER TABLE task DROP COLUMN snooze_notified_until')
         store._conn.execute("UPDATE schema_meta SET value='6' WHERE key='schema_version'")
     with Store(path) as store:
-        assert store.schema_version == 7
+        assert store.schema_version == 8
         assert store.get_task(goal.id, record_view=False).completed_at == now
         assert store.get_task(idea.id, record_view=False).in_inbox
         assert all(task.snoozed_until is None for task in store.list_tasks(record_view=False))

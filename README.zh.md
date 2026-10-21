@@ -242,6 +242,47 @@ todogc done 1 --with-subtasks
 网页端对应 **Mark as done**、包含未完成子任务的勾选项，以及 **Completed / Reopen**。
 完成最后一个子任务不会自动完成父目标。
 
+## 每周回顾与分享卡
+
+CLI 使用 `review` 查看完成与清理统计；网页在侧栏选择 **Weekly review**，选择周和时区，
+最多勾选三个完成项作为亮点，预览并下载 PNG/SVG，或用 **Save snapshot** 固定数据和亮点。
+分享卡保持英文，默认只展示数字，选择亮点后才展示任务标题。
+
+<img src="docs/weekly-review-example.png" alt="使用示例数据生成的 TodoGC 每周回顾卡" width="430">
+
+*使用示例数据生成的分享卡。*
+
+```bash
+todogc review --week this
+todogc review --week last
+todogc review --week 2026-10-19 --timezone Asia/Tokyo
+todogc review --week last --export weekly.svg
+pip install "todogc[export]"                 # 可选 PNG 依赖 Pillow
+todogc review --week last --export weekly.png
+todogc review --week last --highlight 2 --highlight 5 --export weekly.png --save
+todogc review --list
+todogc review --snapshot 1 --export saved-week.svg
+todogc review --snapshot 1 --export saved-week.json
+```
+
+周期为本地周一零点到下周一零点（不含结束时刻），可指定 IANA 时区，并正确处理夏令时。
+本周只统计生成时刻之前的记录，图片标记 **In progress**，不能选择未来周。
+
+- 每个任务每周只计一次，归入本周首次 DONE 的日期；重开单列，不抹去完成记录。
+- 目标与其他任务分开统计，每日柱形包含两者；批量完成子树时分别计入目标与后代任务。
+  元任务和直接完成的 Inbox 想法计为非目标任务。
+- 捕获、整理、Inbox 放弃和实际 GC 回收分别按期间内的任务编号去重；GC 预演不计入回收。
+- 当前任务量记录于生成时刻，分为活跃、休眠、待整理 Inbox 三组，不用于推测历史周末结余。
+- 查看和导出不增加 view、progress 或 GC 记录；原来的 `stats` 仍统计 GC 审计历史。
+
+亮点编号使用 `review` 实际列出的完成项，最多三个。JSON 包含完整回顾与所有完成项标题。
+快照保存在当前数据库中，固定统计、名称、时间边界、当时的任务量和所选亮点。
+新完成/放弃事件保存当时的名称、目标身份和收件箱位置；缺少历史标签的旧事件会使用当前
+元数据并在回顾中注明。保存快照后不再随任务修改而变化。
+
+SVG 无须额外依赖，PNG 使用 Pillow 与本地字体（缺少时使用 Pillow 内置字体），无需浏览器、
+API key 或外部服务；`[web]` 已包含 PNG 支持。两种图片均为 1080 × 1350，使用同一排版与真实统计。
+
 ## 定时休眠
 
 Snooze 将任务隐藏至指定时间，保留父子关系、Root 身份和分代，仍占用容量。休眠期间
@@ -369,8 +410,8 @@ pytest
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # 产出 dist/todogc-0.8.0-py3-none-any.whl 与 .tar.gz
-pip install dist/todogc-0.8.0-py3-none-any.whl   # 到哪都能装
+python -m build          # 产出 dist/todogc-0.9.0-py3-none-any.whl 与 .tar.gz
+pip install dist/todogc-0.9.0-py3-none-any.whl   # 到哪都能装
 ```
 
 `dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。
