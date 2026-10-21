@@ -169,7 +169,7 @@ def render_ls(tasks: Iterable[Task], root_ids: set[int]) -> bool:
             str(t.id),
             f"[{_GEN_STYLE.get(t.gen, 'white')}]{t.gen.value}[/]",
             str(t.age),
-            f"{star}{escape(t.title)}",
+            f"{star}{escape(t.title)}" + (" [inbox]" if t.in_inbox else ""),
             t.ref_strength.value,
             f"#{t.root_id}" if t.root_id is not None else "",
             f"[{_STATE_STYLE.get(t.state, 'white')}]{t.state.value}[/]",

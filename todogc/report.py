@@ -93,8 +93,8 @@ def format_gc_log(
     Returns:
         str: multi-line GC log text.
     """
-    total = len(result.survivors) + len(result.candidates)
-    after = len(result.survivors)
+    total = len(result.survivors) + len(result.candidates) + len(result.inbox)
+    after = len(result.survivors) + len(result.inbox)
     reclaim = len(result.candidates)
     kind = "Full" if pause_full else "Young"
     cause = cause or ("Ergonomics" if pause_full else "Allocation Failure")
@@ -261,7 +261,8 @@ def _row_kind(task: Task, roots: set[int], is_candidate: bool) -> RowKind:
 def heap_view(result: GCResult, roots: set[int]) -> list[HeapSection]:
     """Organize one GC result into a structured, per-generation heap view (the single source shared by the text heap map and the Web UI).
 
-    survivors + candidates are the heap's entire object set; grouped by generation via
+    Survivors and candidates form the execution heap; Inbox is displayed separately.
+    Tasks are grouped by generation via
     _GEN_ORDER, sorted ascending by id within each generation, with each row's marker
     category and (if a candidate) its Candidate resolved. Already-collected objects are in
     the trash, not on the heap, and never appear here.
@@ -295,13 +296,12 @@ def heap_used_count(result: GCResult) -> int:
     """Count heap objects counted toward -Xmx (excludes Metaspace meta-tasks, same accounting as store.heap_size).
 
     Args:
-        result (GCResult): one GC's result; survivors + candidates are the heap's entire
-            object set.
+        result (GCResult): one GC's result, including Inbox capacity.
 
     Returns:
         int: total non-Metaspace heap objects.
     """
-    tasks = list(result.survivors) + [c.task for c in result.candidates]
+    tasks = list(result.survivors) + [c.task for c in result.candidates] + result.inbox
     return sum(1 for t in tasks if t.gen is not Generation.META)
 
 
@@ -382,8 +382,7 @@ def format_heap_map(
     store.heap_size.
 
     Args:
-        result (GCResult): one GC's result; survivors + candidates are the heap's entire
-            object set.
+        result (GCResult): one GC's result, including Inbox capacity.
         roots (set[int]): ids of the active roots (marked ★).
         heap_max (int | None): heap capacity (-Xmx); draws the usage fill bar if given,
             otherwise just reports the object count.
@@ -407,6 +406,9 @@ def format_heap_map(
         usage = _t("report.heap_map.usage_no_max", lang=lang, used=used)
 
     lines = [_t("report.heap_map.title", lang=lang), usage, ""]
+    if result.inbox:
+        lines.append(_t("inbox.heap_summary", lang=lang, count=len(result.inbox)))
+        lines.append("")
     for i, section in enumerate(heap_view(result, roots)):
         conn = "┌" if i == 0 else "├"
         lines.append(f"  {conn} {section.display_name(lang)} ({len(section.rows)})")
@@ -464,7 +466,7 @@ def format_doctor(store: Store, result: GCResult, *, now: datetime | None = None
     roots = store.root_ids()
     findings: list[tuple[int, Task, list[str], list[str]]] = []
     for task in store.list_tasks(record_view=False):
-        if not task.state.is_active or task.id is None:
+        if not task.state.is_active or task.in_inbox or task.id is None:
             continue
         views = store.view_count(task.id)
         progress = store.refcount(task.id)

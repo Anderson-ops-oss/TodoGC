@@ -62,8 +62,10 @@ todogc dep 3 4                                             # #3's reason is #4
 todogc dep 4 3                                             # #4's reason is #3 — a cycle
 
 todogc ls                                    # look at your heap
-todogc tree                                  # parent/child hierarchy; read-only
+todogc tree                                  # parent/child hierarchy, including Inbox; read-only
 todogc tree --show-completed                 # also show completed nodes
+todogc capture "Explore a browser extension" # quickly record an idea in Inbox
+todogc inbox                                 # list pending ideas and review markers; read-only
 todogc heap                                  # heap map: generational layout + -Xmx usage + zombies in red (alias jmap)
 todogc web                                   # move that heap map into the browser + interaction (needs [web], see below)
 todogc watch                                 # scheduled checkup: push to ntfy on state transitions/heap alerts (needs [notify], see below)
@@ -172,7 +174,7 @@ must have real progress within the time window. Progressing, editing, reviving, 
 restoring all reset "consecutive skips", but the historical skip total is kept for
 audit; a restored task gets a 7-day grace period by default.
 
-The database auto-migrates from older schemas to v5; a `.bak` is generated alongside
+The database auto-migrates when needed; a `.bak` is generated alongside
 the file before migrating. A real GC run writes to the audit history; `heap` and
 `gc --dry-run` are always read-only.
 
@@ -265,7 +267,8 @@ todogc reopen 2                   # reopen this task only
 todogc reopen 2 --root-id 3        # optionally reassign to an active parent
 ```
 
-`ls` defaults to active tasks. Completed tasks release heap capacity, are excluded from
+`ls` defaults to active tasks outside Inbox; use `inbox` to list pending ideas.
+Completed tasks release heap capacity, are excluded from
 GC/doctor/watch checks, and cannot be progressed, edited or snoozed until reopened.
 Root and meta-tasks can also be completed. Completion does not promote generations
 or silently complete a parent when its last child finishes.
@@ -288,7 +291,43 @@ If the old parent is completed or collected, reopen the parent first or choose a
 active parent. Reopening respects the heap cap; the CLI's `reopen --force` explicitly
 allows over-allocation. Completing and reopening never delete audit history.
 
-Existing databases migrate to schema v5 on first open, with a `.bak` created before migration.
+Existing databases migrate automatically on first open, with a `.bak` created before migration.
+
+## Inbox
+
+Inbox is for ideas you have captured but have not committed to a goal. It is separate
+from **Unlinked**, which contains ordinary tasks that lack a parent or active goal.
+
+```bash
+todogc capture "Explore a browser extension"
+todogc inbox
+todogc inbox --move 7            # explicitly move an existing standalone unlinked task
+```
+
+Use the actual ID returned by `capture`. Choose one of these outcomes for a pending idea:
+
+```bash
+todogc link 7 1                  # organize under an active parent; leave Inbox
+todogc root 7                    # make it a goal; leave Inbox
+todogc done 7                    # finish it directly; keep completion history
+todogc discard 7 "Not now"       # move it to the graveyard; recoverable
+```
+
+In the Web UI, use **Capture idea** above the tree, then select an Inbox node for
+**Move task**, **Make goal**, **Mark as done**, or **Discard**. Parent pickers exclude
+pending ideas: organize an idea before using it as a parent. Existing standalone
+Unlinked tasks have an explicit **Move to Inbox** action; they are never moved automatically.
+
+Ideas display time spent in Inbox and **Needs review** after 7 days. The marker appears
+in the CLI list, terminal tree, and Web UI; it does not delete the idea. Inbox ideas
+count toward the normal heap cap but are excluded from GC candidate selection and
+leak diagnosis. The heap view includes their capacity separately from the generation rows.
+Capturing, reviewing and organizing ideas do not count as progress or views.
+
+`restore` returns a discarded idea to Inbox; `reopen` returns a completed idea to Inbox.
+Both start a fresh review period and preserve the original history. Passing `--root-id`
+explicitly restores/reopens it as an ordinary task under that parent instead. Restoring
+and reopening respect capacity; `--force` explicitly allows over-allocation in the CLI.
 
 ## Task tree
 
@@ -296,7 +335,7 @@ Existing databases migrate to schema v5 on first open, with a `.bak` created bef
 collapse nested tasks; select a node to see its path, generation, history and actions.
 On narrow screens the tree appears above the detail panel.
 
-- **Goals**, **Unlinked**, and **Meta-tasks** group top-level tasks. Nested tasks follow
+- **Inbox**, **Goals**, **Unlinked**, and **Meta-tasks** group top-level tasks. Nested tasks follow
   their parent links; dependency/reason edges do not change the hierarchy.
 - **Add subtask** creates a task under the selected active task and selects it immediately.
   It follows the same heap-capacity rules as ordinary allocation.
@@ -311,8 +350,7 @@ On narrow screens the tree appears above the detail panel.
 The sidebar's parent picker also uses task names, so task IDs do not need to be memorized.
 Parent cycles are rejected in both the Web UI and CLI. Older cyclic parent links remain
 visible with a warning and can be repaired by moving a task or unlinking it. Tasks whose
-parent is unavailable are shown at the top level so they remain accessible. The tree uses
-the existing schema v5; no additional database migration is required.
+parent is unavailable are shown at the top level so they remain accessible.
 
 The same hierarchy is available in the terminal, without recording views:
 
@@ -323,6 +361,9 @@ todogc tree --show-completed
 
 ```text
 Task tree
+
+Inbox
+└── ○ #4 Explore a browser extension · 8d in Inbox · Needs review
 
 Goals
 └── ★ #1 Release TodoGC
@@ -395,8 +436,8 @@ Zero core dependencies — packs into a standard wheel/sdist for direct distribu
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # produces dist/todogc-0.6.0-py3-none-any.whl and .tar.gz
-pip install dist/todogc-0.6.0-py3-none-any.whl   # install it anywhere
+python -m build          # produces dist/todogc-0.7.0-py3-none-any.whl and .tar.gz
+pip install dist/todogc-0.7.0-py3-none-any.whl   # install it anywhere
 ```
 
 `dist/`, `build/`, `*.egg-info/` are all in `.gitignore` — build artifacts aren't

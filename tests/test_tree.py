@@ -16,7 +16,7 @@ def test_tree_groups_paths_and_collapse_keep_every_task_once(store):
     meta = store.add_task("Plan better", meta=True)
     store.add_dep(goal.id, unlinked.id)
     tree = build_task_tree(store.list_tasks(record_view=False), store.root_ids())
-    assert tree.groups == {"goals": [goal.id], "unlinked": [unlinked.id], "meta": [meta.id]}
+    assert tree.groups == {"inbox": [], "goals": [goal.id], "unlinked": [unlinked.id], "meta": [meta.id]}
     assert [(t.id, depth) for t, depth, _ in tree.rows("goals", set())] == [(goal.id, 0), (child.id, 1), (grandchild.id, 2)]
     assert [t.id for t, _, _ in tree.rows("goals", {child.id})] == [goal.id, child.id]
     assert [t.id for t, _, _ in tree.rows("goals", {goal.id})] == [goal.id]

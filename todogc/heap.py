@@ -13,6 +13,7 @@ from todogc.i18n import t as _t
 # age lives in its object header's mark word, which only has 4 bits and tops out at 15 — so
 # -XX:MaxTenuringThreshold defaults to 15 too. Fifteen rounds of self-deception earns tenure.
 TENURING_THRESHOLD: int = 15
+INBOX_REVIEW_DAYS: int = 7
 
 
 class TouchKind(str, Enum):
@@ -29,6 +30,9 @@ class TouchKind(str, Enum):
     RESTORE = "restore"    # restored from the trash
     DONE = "done"          # successfully completed
     REOPEN = "reopen"      # completed task returned to the active heap
+    CAPTURE = "capture"    # an idea recorded before committing to it
+    INBOX = "inbox"        # explicitly moved into the Inbox
+    ORGANIZE = "organize"  # an Inbox idea committed to a goal or parent
 
     @property
     def is_progress(self) -> bool:
@@ -147,6 +151,18 @@ class Task:
     id: int | None = None
     ref_strength: ReferenceStrength = ReferenceStrength.SOFT
     completed_at: datetime | None = None
+    inbox_since: datetime | None = None
+
+    @property
+    def in_inbox(self) -> bool:
+        """Location is independent of lifecycle, so done/discarded ideas retain their origin."""
+        return self.inbox_since is not None
+
+    def inbox_days(self, now: datetime) -> int:
+        return max(0, (now - self.inbox_since).days) if self.inbox_since else 0
+
+    def needs_inbox_review(self, now: datetime) -> bool:
+        return self.state.is_active and self.in_inbox and self.inbox_days(now) >= INBOX_REVIEW_DAYS
 
     @property
     def is_unlinked(self) -> bool:

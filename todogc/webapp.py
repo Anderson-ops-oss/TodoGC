@@ -19,7 +19,7 @@ from todogc.i18n import SUPPORTED_LOCALES
 from todogc.i18n import t as _t
 from todogc.report import HeapRow, RowKind
 from todogc.store import Store
-from todogc.tree import TaskTree, build_task_tree
+from todogc.tree import TaskTree, build_task_tree, task_label
 from todogc.watcher import Watcher
 
 if TYPE_CHECKING:
@@ -175,6 +175,8 @@ def _render_heap(result: GCResult, roots: set[int], heap_max: int, *, lang: str)
         min(pct, 1.0),
         text=_t("webapp.heap.progress", lang=lang, used=used, max=heap_max, pct=round(pct * 100, 1)),
     )
+    if result.inbox:
+        st.caption(_t("inbox.heap_summary", lang=lang, count=len(result.inbox)))
 
     cols = st.columns(2)
     for i, sec in enumerate(report.heap_view(result, roots)):
@@ -271,12 +273,12 @@ def _render_ceremony(
             started_at=now,
             mode=mode,
             heap_before=heap_before,
-            survivors=len(result.survivors),
+            survivors=len(result.survivors) + len(result.inbox),
             candidates=len(result.candidates),
             collected=len(out.collected),
             revived=len(out.revived),
             released_pct=round(
-                100 * len(out.collected) / (len(result.survivors) + len(result.candidates)), 1
+                100 * len(out.collected) / (len(result.survivors) + len(result.candidates) + len(result.inbox)), 1
             ),
             items=[
                 (c.task.persisted_id, c.reason.value, actions[c.task.persisted_id])
@@ -309,7 +311,7 @@ def _render_add(store: Store, heap_max: int, now: datetime, *, lang: str) -> Non
         title = st.text_input(_t("webapp.field.title", lang=lang))
         is_root = st.checkbox(_t("webapp.add.root_checkbox", lang=lang))
         parents = {
-            task.persisted_id: task for task in store.list_tasks(active_only=True, record_view=False)
+            task.persisted_id: task for task in store.list_tasks(active_only=True, inbox=False, record_view=False)
         }
         root_id = st.selectbox(
             _t("webapp.tree.add_parent", lang=lang), [0, *parents],
@@ -345,7 +347,7 @@ def _render_add(store: Store, heap_max: int, now: datetime, *, lang: str) -> Non
     st.rerun()
 
 
-def _render_graveyard(store: Store, now: datetime, *, lang: str) -> None:
+def _render_graveyard(store: Store, heap_max: int, now: datetime, *, lang: str) -> None:
     """Render the graveyard: epitaphs for collected tasks + one-click restore.
 
     Args:
@@ -377,16 +379,17 @@ def _render_graveyard(store: Store, now: datetime, *, lang: str) -> None:
             + f":gray[{_t('webapp.graveyard.epitaph', lang=lang, note=note)}]"
         )
         if c1.button(_t("webapp.graveyard.restore_button", lang=lang), key=f"restore_{task_id}"):
-            t.state = State.LIVE
-            store.update_task(t)
-            store.record(task_id, TouchKind.RESTORE, ts=now)
-            st.rerun()
+            try:
+                store.restore_task(task_id, heap_max=heap_max, ts=now)
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
 
 
 def _parent_options(store: Store, task_id: int) -> dict[int, Task]:
     excluded = {task_id, *(task.persisted_id for task in store.descendants(task_id))}
     return {
-        task.persisted_id: task for task in store.list_tasks(active_only=True, record_view=False)
+        task.persisted_id: task for task in store.list_tasks(active_only=True, inbox=False, record_view=False)
         if task.persisted_id not in excluded
     }
 
@@ -404,7 +407,7 @@ def _toggle_tree_node(task_id: int) -> None:
     st.session_state["tree_collapsed"] = collapsed
 
 
-def _render_tree_nodes(tree: TaskTree, root_ids: set[int], selected: int, *, lang: str) -> None:
+def _render_tree_nodes(tree: TaskTree, root_ids: set[int], selected: int, now: datetime, *, lang: str) -> None:
     collapsed = set(st.session_state.get("tree_collapsed", set()))
     # Pixel-based indentation keeps nested rows readable when Streamlit stacks the
     # surrounding tree/detail columns on narrow screens. No task text enters CSS.
@@ -423,7 +426,12 @@ def _render_tree_nodes(tree: TaskTree, root_ids: set[int], selected: int, *, lan
     for group, ids in tree.groups.items():
         if not ids:
             continue
-        st.caption(_t(f"webapp.tree.group.{group}", lang=lang))
+        if group == "inbox":
+            pending = [tree.tasks[tid] for tid in ids if tree.tasks[tid].state.is_active]
+            review = sum(task.needs_inbox_review(now) for task in pending)
+            st.caption(_t("inbox.group_review" if review else "inbox.list_title", lang=lang, count=len(pending), review=review))
+        else:
+            st.caption(_t(f"webapp.tree.group.{group}", lang=lang))
         for task, depth, has_children in tree.rows(group, collapsed):
             tid = task.persisted_id
             indent = min(depth, 6)
@@ -438,12 +446,12 @@ def _render_tree_nodes(tree: TaskTree, root_ids: set[int], selected: int, *, lan
                 )
             else:
                 toggle.caption("·")
-            marker = "✓" if task.state is State.DONE else "★" if tid in root_ids else "⊛" if task.is_meta else "○"
             generation = _t(f"webapp.tree.generation.{task.gen.value}", lang=lang)
             node.button(
-                f"{marker} #{tid} {task.title}", key=f"tree_select_{tid}",
+                task_label(task, root_ids, now=now, lang=lang), key=f"tree_select_{tid}",
                 type="primary" if tid == selected else "secondary", use_container_width=True,
-                help=generation, on_click=_select_tree_task, args=(tid,),
+                help=task_label(task, root_ids, now=now, lang=lang) if task.in_inbox else generation,
+                on_click=_select_tree_task, args=(tid,),
             )
 
 
@@ -515,6 +523,14 @@ def _render_task_details(store: Store, task: Task, heap_max: int, now: datetime,
         except ValueError as exc:
             st.error(str(exc))
 
+    if task.root_id is None and not task.is_meta and task_id not in store.root_ids():
+        if st.button(_t("inbox.move_button", lang=lang), key=f"inbox_move_{task_id}"):
+            try:
+                store.move_to_inbox(task_id, ts=now)
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+
     parents = _parent_options(store, task_id)
     options = [0, *parents]
     parent = st.selectbox(
@@ -568,6 +584,69 @@ def _render_task_details(store: Store, task: Task, heap_max: int, now: datetime,
     _render_task_history(store, task_id, lang=lang)
 
 
+def _render_capture(store: Store, heap_max: int, now: datetime, *, lang: str) -> None:
+    with st.form("capture_idea", clear_on_submit=True):
+        st.caption(_t("inbox.capture_hint", lang=lang))
+        entry, submit = st.columns([8, 2])
+        title = entry.text_input(
+            _t("inbox.idea_title", lang=lang), key="capture_title",
+            placeholder=_t("inbox.idea_title", lang=lang), label_visibility="collapsed",
+        )
+        captured = submit.form_submit_button(_t("inbox.capture_button", lang=lang), use_container_width=True)
+    if captured:
+        try:
+            task = store.capture(title, heap_max=heap_max, ts=now)
+            st.session_state["selected_task_id"] = task.persisted_id
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+
+
+def _render_inbox_details(store: Store, task: Task, now: datetime, *, lang: str) -> None:
+    tid = task.persisted_id
+    st.caption(_t("inbox.details", lang=lang, time=task.inbox_since.isoformat(timespec="minutes") if task.inbox_since else "-"))
+    if task.needs_inbox_review(now):
+        st.warning(_t("inbox.needs_review", lang=lang))
+    st.caption(_t("inbox.organize_hint", lang=lang))
+    parents = _parent_options(store, tid)
+    parent = st.selectbox(
+        _t("webapp.tree.move_to", lang=lang), [0, *parents], key=f"inbox_parent_{tid}",
+        format_func=lambda value: f"#{value} {parents[value].title}" if value else _t("inbox.choose_parent", lang=lang),
+    )
+    move, goal = st.columns(2)
+    if move.button(_t("webapp.tree.move_button", lang=lang), key=f"inbox_organize_{tid}"):
+        if not parent:
+            st.error(_t("inbox.choose_parent", lang=lang))
+        else:
+            try:
+                store.link(tid, parent, ts=now)
+                st.session_state["tree_collapsed"] = set()
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+    if goal.button(_t("inbox.make_goal", lang=lang), key=f"inbox_root_{tid}"):
+        try:
+            store.set_root(tid)
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+    note = st.text_input(_t("webapp.task_manager.note_label", lang=lang), key=f"inbox_note_{tid}")
+    done, discard = st.columns(2)
+    if done.button(_t("webapp.done.button", lang=lang), key=f"done_{tid}"):
+        try:
+            store.complete_task(tid, note=note, ts=now)
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+    if discard.button(_t("inbox.discard_button", lang=lang), key=f"inbox_discard_{tid}"):
+        try:
+            store.discard_inbox(tid, note=note, ts=now)
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+    _render_task_history(store, tid, lang=lang)
+
+
 def _render_task_tree(store: Store, heap_max: int, now: datetime, *, lang: str) -> None:
     # Scope layout rules to keyed tree controls; leave the rest of Streamlit unchanged.
     st.markdown(
@@ -594,6 +673,7 @@ def _render_task_tree(store: Store, heap_max: int, now: datetime, *, lang: str) 
             > [data-testid="stColumn"] { min-width: 0; width: 100%; }
         </style>""", unsafe_allow_html=True,
     )
+    _render_capture(store, heap_max, now, lang=lang)
     show_completed = st.checkbox(_t("webapp.tree.show_completed", lang=lang), key="tree_show_completed")
     roots = store.root_ids(active_only=False)
     tree = build_task_tree(store.list_tasks(record_view=False), roots, show_completed=show_completed)
@@ -606,7 +686,7 @@ def _render_task_tree(store: Store, heap_max: int, now: datetime, *, lang: str) 
         st.session_state["selected_task_id"] = selected
     left, right = st.columns([4, 6], gap="large")
     with left:
-        _render_tree_nodes(tree, roots, selected, lang=lang)
+        _render_tree_nodes(tree, roots, selected, now, lang=lang)
     with right:
         task = tree.tasks[selected]
         st.text(f"#{task.id} {task.title}")
@@ -615,6 +695,8 @@ def _render_task_tree(store: Store, heap_max: int, now: datetime, *, lang: str) 
         st.caption(_t("webapp.tree.generation_label", lang=lang, name=_t(f"webapp.tree.generation.{task.gen.value}", lang=lang)))
         if task.state is State.DONE:
             _render_selected_completed(store, task, heap_max, now, lang=lang)
+        elif task.in_inbox:
+            _render_inbox_details(store, task, now, lang=lang)
         else:
             _render_task_details(store, task, heap_max, now, lang=lang)
 
@@ -737,7 +819,7 @@ def main() -> None:
         st.code(report.format_stats(store.gc_runs(), lang=lang), language=None)
 
         st.subheader(_t("webapp.main.graveyard_subheader", lang=lang))
-        _render_graveyard(store, now, lang=lang)
+        _render_graveyard(store, heap_max, now, lang=lang)
 
         st.subheader(_t("webapp.completed.title", lang=lang))
         _render_completed(store, heap_max, now, lang=lang)

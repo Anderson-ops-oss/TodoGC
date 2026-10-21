@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS dep (
 CREATE INDEX IF NOT EXISTS idx_touch_task ON touch(task_id);
 """
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -207,6 +207,9 @@ class Store:
         if version < 5:
             self._conn.execute("ALTER TABLE task ADD COLUMN completed_at TEXT")
             version = 5
+        if version < 6:
+            self._conn.execute("ALTER TABLE task ADD COLUMN inbox_since TEXT")
+            version = 6
         self._conn.execute(
             "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -285,6 +288,7 @@ class Store:
             state=State(row["state"]),
             created_at=Store._from_iso(row["created_at"]),
             completed_at=Store._from_iso(row["completed_at"]) if row["completed_at"] else None,
+            inbox_since=Store._from_iso(row["inbox_since"]) if row["inbox_since"] else None,
         )
 
     @staticmethod
@@ -315,6 +319,7 @@ class Store:
         is_root: bool = False,
         meta: bool = False,
         ref_strength: ReferenceStrength | str = ReferenceStrength.SOFT,
+        inbox: bool = False,
         ts: datetime | None = None,
     ) -> Task:
         """Add (allocate) a new task, and log a CREATE touch event.
@@ -335,19 +340,21 @@ class Store:
         title = title.strip()
         if not title:
             raise ValueError(_t("store.error.empty_title"))
+        if inbox and (root_id is not None or is_root or meta):
+            raise ValueError(_t("inbox.error.standalone"))
         now = ts or self._now()
         strength = ReferenceStrength(ref_strength)
         if root_id is not None:
-            self._require_live_task(root_id)
+            self._require_parent_task(root_id)
         iso = self._to_iso(now)
         gen = Generation.META if meta else Generation.EDEN
         cur = self._conn.execute(
-            "INSERT INTO task (title, root_id, is_root, gen, age, state, created_at, ref_strength) "
-            "VALUES (?, ?, ?, ?, 0, ?, ?, ?)",
-            (title, root_id, int(is_root), gen.value, State.LIVE.value, iso, strength.value),
+            "INSERT INTO task (title, root_id, is_root, gen, age, state, created_at, ref_strength, inbox_since) "
+            "VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)",
+            (title, root_id, int(is_root), gen.value, State.LIVE.value, iso, strength.value, iso if inbox else None),
         )
         task_id = self._lastrowid(cur)
-        self.record(task_id, TouchKind.CREATE, ts=now)
+        self.record(task_id, TouchKind.CAPTURE if inbox else TouchKind.CREATE, ts=now)
         self._conn.commit()
         return Task(
             id=task_id,
@@ -358,7 +365,56 @@ class Store:
             age=0,
             state=State.LIVE,
             created_at=self._from_iso(iso),
+            inbox_since=self._from_iso(iso) if inbox else None,
         )
+
+    def capture(self, title: str, *, heap_max: int = 50, force: bool = False, ts: datetime | None = None) -> Task:
+        if not force and self.heap_size() >= heap_max:
+            raise ValueError(_t("inbox.error.full", max=heap_max))
+        return self.add_task(title, inbox=True, ts=ts)
+
+    def move_to_inbox(self, task_id: int, *, ts: datetime | None = None) -> None:
+        """Only explicit, standalone unlinked tasks can enter the Inbox; never migrate implicitly."""
+        with self._conn:
+            task = self._require_live_task(task_id)
+            if task.in_inbox:
+                raise ValueError(_t("inbox.error.already_inbox", id=task_id))
+            if task.root_id is not None or task.is_meta or task_id in self.root_ids() or self.descendants(task_id):
+                raise ValueError(_t("inbox.error.standalone"))
+            iso = self._to_iso(ts or self._now())
+            self._conn.execute("UPDATE task SET inbox_since = ? WHERE id = ?", (iso, task_id))
+            self._conn.execute(
+                "INSERT INTO touch(task_id, kind, ts) VALUES (?, ?, ?)", (task_id, TouchKind.INBOX.value, iso),
+            )
+            self._conn.execute("DELETE FROM watch_state WHERE task_id = ?", (task_id,))
+
+    def discard_inbox(self, task_id: int, *, note: str | None = None, ts: datetime | None = None) -> None:
+        with self._conn:
+            task = self._require_live_task(task_id)
+            if not task.in_inbox:
+                raise ValueError(_t("inbox.error.not_inbox", id=task_id))
+            iso = self._to_iso(ts or self._now())
+            self._conn.execute("UPDATE task SET state = ? WHERE id = ?", (State.COLLECTED.value, task_id))
+            self._conn.execute(
+                "INSERT INTO touch(task_id, kind, ts, note) VALUES (?, ?, ?, ?)",
+                (task_id, TouchKind.COLLECT.value, iso, note or _t("inbox.discard.default")),
+            )
+            self._conn.execute("DELETE FROM watch_state WHERE task_id = ?", (task_id,))
+
+    def collect_candidate(self, task_id: int, *, note: str, ts: datetime) -> bool:
+        """A stale interactive GC snapshot must not overwrite completion or Inbox triage."""
+        with self._conn:
+            changed = self._conn.execute(
+                "UPDATE task SET state = ? WHERE id = ? AND state IN (?, ?) AND inbox_since IS NULL",
+                (State.COLLECTED.value, task_id, State.LIVE.value, State.CANDIDATE.value),
+            )
+            if changed.rowcount == 0:
+                return False
+            self._conn.execute(
+                "INSERT INTO touch(task_id, kind, ts, note) VALUES (?, ?, ?, ?)",
+                (task_id, TouchKind.COLLECT.value, self._to_iso(ts), note),
+            )
+        return True
 
     def record(
         self,
@@ -430,10 +486,10 @@ class Store:
         Returns:
             None
         """
-        self._require_live_task(task_id)
+        task = self._require_live_task(task_id)
         self.validate_parent(task_id, root_id)
-        self._conn.execute("UPDATE task SET root_id = ? WHERE id = ?", (root_id, task_id))
-        self.record(task_id, TouchKind.LINK, ts=ts)
+        self._conn.execute("UPDATE task SET root_id = ?, inbox_since = NULL WHERE id = ?", (root_id, task_id))
+        self.record(task_id, TouchKind.ORGANIZE if task.in_inbox else TouchKind.LINK, note=f"parent=#{root_id}", ts=ts)
         self._conn.commit()
 
     def update_task(self, task: Task) -> None:
@@ -455,10 +511,12 @@ class Store:
         if task.id is None:
             raise ValueError(_t("store.error.update_requires_persisted"))
         self._conn.execute(
-            "UPDATE task SET title = ?, root_id = ?, gen = ?, age = ?, state = ?, ref_strength = ? WHERE id = ?",
+            "UPDATE task SET title = ?, root_id = ?, gen = ?, age = ?, state = ?, ref_strength = ?, completed_at = ?, inbox_since = ? WHERE id = ?",
             (
                 task.title, task.root_id, task.gen.value, task.age, task.state.value,
-                task.ref_strength.value, task.id,
+                task.ref_strength.value,
+                self._to_iso(task.completed_at) if task.completed_at else None,
+                self._to_iso(task.inbox_since) if task.inbox_since else None, task.id,
             ),
         )
         self._conn.commit()
@@ -503,6 +561,12 @@ class Store:
             raise ValueError(_t("store.error.task_already_done", id=task_id))
         return task
 
+    def _require_parent_task(self, task_id: int) -> Task:
+        task = self._require_live_task(task_id)
+        if task.in_inbox:
+            raise ValueError(_t("inbox.error.parent", id=task_id))
+        return task
+
     def descendants(self, task_id: int) -> list[Task]:
         """Find descendants in every state, without looping on legacy parent cycles."""
         rows = self._conn.execute(
@@ -524,7 +588,7 @@ class Store:
         """Validate a containment link; dependency edges remain a separate graph."""
         if task_id == parent_id:
             raise ValueError(_t("store.error.self_link"))
-        self._require_live_task(parent_id)
+        self._require_parent_task(parent_id)
         if any(task.persisted_id == parent_id for task in self.descendants(task_id)):
             raise ValueError(_t("store.error.parent_cycle"))
 
@@ -575,9 +639,10 @@ class Store:
             if not force and not task.is_meta and self.heap_size() >= heap_max:
                 raise ValueError(_t("store.error.reopen_heap_full", max=heap_max))
             iso = self._to_iso(ts or self._now())
+            inbox_since = iso if task.in_inbox and root_id is None else None
             self._conn.execute(
-                "UPDATE task SET state = ?, completed_at = NULL, root_id = ? WHERE id = ?",
-                (State.LIVE.value, parent, task_id),
+                "UPDATE task SET state = ?, completed_at = NULL, root_id = ?, inbox_since = ? WHERE id = ?",
+                (State.LIVE.value, parent, inbox_since, task_id),
             )
             self._conn.execute(
                 "INSERT INTO touch(task_id, kind, ts, note) VALUES (?, ?, ?, ?)",
@@ -587,7 +652,37 @@ class Store:
         task.state = State.LIVE
         task.completed_at = None
         task.root_id = parent
+        task.inbox_since = self._from_iso(inbox_since) if inbox_since else None
         return task
+
+    def restore_task(
+        self, task_id: int, *, root_id: int | None = None, heap_max: int = 50,
+        force: bool = False, ts: datetime | None = None,
+    ) -> Task:
+        """Restore the original location, or organize into an explicitly selected parent."""
+        with self._conn:
+            task = self.get_task(task_id, record_view=False)
+            if task is None:
+                raise ValueError(_t("store.error.task_not_found", id=task_id))
+            if task.state is not State.COLLECTED:
+                raise ValueError(_t("cli.restore.not_collected", id=task_id))
+            if root_id is not None:
+                self.validate_parent(task_id, root_id)
+            if not force and not task.is_meta and self.heap_size() >= heap_max:
+                raise ValueError(_t("inbox.error.full", max=heap_max))
+            iso = self._to_iso(ts or self._now())
+            inbox_since = iso if task.in_inbox and root_id is None else None
+            self._conn.execute(
+                "UPDATE task SET state = ?, root_id = ?, inbox_since = ? WHERE id = ?",
+                (State.LIVE.value, root_id if root_id is not None else task.root_id, inbox_since, task_id),
+            )
+            self._conn.execute(
+                "INSERT INTO touch(task_id, kind, ts) VALUES (?, ?, ?)", (task_id, TouchKind.RESTORE.value, iso),
+            )
+            self._conn.execute("DELETE FROM watch_state WHERE task_id = ?", (task_id,))
+        restored = self.get_task(task_id, record_view=False)
+        assert restored is not None
+        return restored
 
     # ---- roots and "reason" edges (option A) ----
 
@@ -601,8 +696,13 @@ class Store:
         Returns:
             None
         """
-        self._require_live_task(task_id)
-        self._conn.execute("UPDATE task SET is_root = ? WHERE id = ?", (int(is_root), task_id))
+        task = self._require_live_task(task_id)
+        self._conn.execute(
+            "UPDATE task SET is_root = ?, inbox_since = CASE WHEN ? THEN NULL ELSE inbox_since END WHERE id = ?",
+            (int(is_root), int(is_root), task_id),
+        )
+        if task.in_inbox and is_root:
+            self.record(task_id, TouchKind.ORGANIZE, note="made goal")
         self._conn.commit()
 
     def root_ids(self, *, active_only: bool = True) -> set[int]:
@@ -616,7 +716,7 @@ class Store:
         """
         if active_only:
             rows = self._conn.execute(
-                "SELECT id FROM task WHERE is_root = 1 AND state IN (?, ?)",
+                "SELECT id FROM task WHERE is_root = 1 AND inbox_since IS NULL AND state IN (?, ?)",
                 (State.LIVE.value, State.CANDIDATE.value),
             ).fetchall()
         else:
@@ -716,6 +816,7 @@ class Store:
         *,
         state: State | None = None,
         active_only: bool = False,
+        inbox: bool | None = None,
         record_view: bool = True,
         ts: datetime | None = None,
     ) -> list[Task]:
@@ -739,6 +840,8 @@ class Store:
         if active_only:
             conditions.append("state IN (?, ?)")
             params.extend((State.LIVE.value, State.CANDIDATE.value))
+        if inbox is not None:
+            conditions.append("inbox_since IS NOT NULL" if inbox else "inbox_since IS NULL")
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         rows = self._conn.execute("SELECT * FROM task" + where + " ORDER BY id", params).fetchall()
         tasks = [self._row_to_task(r) for r in rows]
@@ -828,6 +931,7 @@ class Store:
         reset = {
             TouchKind.PROGRESS, TouchKind.EDIT, TouchKind.REVIVE, TouchKind.RESTORE,
             TouchKind.REOPEN,
+            TouchKind.ORGANIZE,
         }
         count = 0
         for touch in reversed(self.touches(task_id)):

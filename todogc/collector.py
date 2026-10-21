@@ -132,6 +132,7 @@ class GCResult:
     survivors: list[Task] = field(default_factory=list)
     candidates: list[Candidate] = field(default_factory=list)
     cycles: list[Cycle] = field(default_factory=list)
+    inbox: list[Task] = field(default_factory=list)
 
     @property
     def released_pct(self) -> float:
@@ -140,7 +141,7 @@ class GCResult:
         Returns:
             float: a percentage rounded to 1 decimal place; 0.0 if there are no tasks.
         """
-        total = len(self.survivors) + len(self.candidates)
+        total = len(self.survivors) + len(self.candidates) + len(self.inbox)
         return 0.0 if total == 0 else round(100 * len(self.candidates) / total, 1)
 
 
@@ -187,14 +188,15 @@ class Collector:
         Returns:
             GCResult: survivors, candidates, and detected reference cycles.
         """
-        tasks = {tid: task for tid, task in tasks.items() if task.state.is_active}
+        pending = [task for task in tasks.values() if task.state.is_active and task.in_inbox]
+        tasks = {tid: task for tid, task in tasks.items() if task.state.is_active and not task.in_inbox}
         all_ids = set(tasks)
         reachable = self._mark(roots, edges, all_ids)
         unreachable = all_ids - reachable
         cycles = self._find_cycles(unreachable, edges)
         cycle_of = {tid: c.id for c in cycles for tid in c.task_ids}
 
-        result = GCResult(cycles=cycles)
+        result = GCResult(cycles=cycles, inbox=pending)
         for tid in sorted(all_ids):
             task = tasks[tid]
             if tid in roots or task.is_meta:
@@ -272,6 +274,7 @@ class Collector:
                 TouchKind.CREATE, TouchKind.PROGRESS, TouchKind.EDIT,
                 TouchKind.LINK, TouchKind.REVIVE, TouchKind.RESTORE,
                 TouchKind.REOPEN,
+                TouchKind.ORGANIZE,
             }
             last = max(
                 (tc.ts for tc in touches if tc.kind in effective_kinds),

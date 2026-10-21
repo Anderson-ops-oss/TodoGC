@@ -20,7 +20,7 @@ from todogc.heap import ReferenceStrength, State, TouchKind
 from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES, set_locale
 from todogc.i18n import t as _t
 from todogc.store import Store
-from todogc.tree import format_task_tree
+from todogc.tree import format_task_tree, task_label
 from todogc.watcher import Watcher
 
 HEAP_MAX = 50  # -Xmx: the max number of tasks you can carry at once, used only for GC log display.
@@ -95,16 +95,22 @@ def run_ceremony(
         task = cand.task
         assert task.id is not None
         choice = decide(cand)
+        current = store.get_task(task.id, record_view=False)
+        if current is None or not current.state.is_active or current.in_inbox:
+            out.skipped.append(task.id)
+            continue
+        task = current
+        assert task.id is not None
         if choice == "collect":
             if _finalize_spent(store, task.id):
                 note = _t("cli.ceremony.finalize_spent")
             else:
                 eulogy = eulogize(cand).strip() if eulogize else ""
                 note = eulogy or _t("cli.ceremony.silent_collect")
-            task.state = State.COLLECTED
-            store.update_task(task)
-            store.record(task.id, TouchKind.COLLECT, note=note, ts=now)
-            out.collected.append(task.id)
+            if store.collect_candidate(task.persisted_id, note=note, ts=now):
+                out.collected.append(task.persisted_id)
+            else:
+                out.skipped.append(task.persisted_id)
         elif choice == "revive":
             if task.is_unlinked and revive_root is not None:
                 r = revive_root if isinstance(revive_root, int) else revive_root(cand)
@@ -234,7 +240,7 @@ def cmd_ls(store: Store, args: argparse.Namespace) -> int:
         tasks = [c.task for c in result.candidates]
     else:
         state = State(args.state) if args.state else None
-        tasks = store.list_tasks(state=state, active_only=state is None)
+        tasks = store.list_tasks(state=state, active_only=state is None, inbox=False if state is None else None)
     roots = store.root_ids()
     if console.render_ls(tasks, roots):  # rich installed -> color table
         return 0
@@ -244,7 +250,7 @@ def cmd_ls(store: Store, args: argparse.Namespace) -> int:
     for t in tasks:
         mark = "★" if t.id in roots else " "
         link = f" →#{t.root_id}" if t.root_id is not None else ""
-        meta = " [meta]" if t.is_meta else ""
+        meta = " [meta]" if t.is_meta else " [inbox]" if t.in_inbox else ""
         print(f" {mark} #{t.id:>3} [{t.gen.value}:{t.age}] {t.title}{link}{meta}  <{t.state.value}>")
     return 0
 
@@ -322,6 +328,45 @@ def cmd_completed(store: Store, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_capture(store: Store, args: argparse.Namespace) -> int:
+    try:
+        task = store.capture(args.title, heap_max=args.heap_max, force=args.force)
+    except ValueError as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
+        return 1
+    print(_t("inbox.captured", id=task.id))
+    return 0
+
+
+def cmd_inbox(store: Store, args: argparse.Namespace) -> int:
+    if args.move is not None:
+        try:
+            store.move_to_inbox(args.move)
+        except ValueError as exc:
+            print(_t("cli.error", error=exc), file=sys.stderr)
+            return 1
+        print(_t("inbox.moved", id=args.move))
+        return 0
+    now = datetime.now(timezone.utc)
+    tasks = store.list_tasks(active_only=True, inbox=True, record_view=False)
+    print(_t("inbox.list_title", count=len(tasks)))
+    if not tasks:
+        print(_t("inbox.empty"))
+    for task in tasks:
+        print(task_label(task, set(), now=now))
+    return 0
+
+
+def cmd_discard(store: Store, args: argparse.Namespace) -> int:
+    try:
+        store.discard_inbox(args.id, note=args.note)
+    except ValueError as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
+        return 1
+    print(_t("inbox.discarded", id=args.id))
+    return 0
+
+
 def cmd_tree(store: Store, args: argparse.Namespace) -> int:
     print(format_task_tree(
         store.list_tasks(record_view=False), store.root_ids(active_only=False),
@@ -363,7 +408,7 @@ def cmd_gc(store: Store, args: argparse.Namespace) -> int:
             started_at=now,
             mode=args.gc_policy.mode,
             heap_before=heap_before,
-            survivors=len(result.survivors),
+            survivors=len(result.survivors) + len(result.inbox),
             candidates=0,
             collected=0,
             revived=0,
@@ -401,12 +446,12 @@ def cmd_gc(store: Store, args: argparse.Namespace) -> int:
         started_at=now,
         mode=args.gc_policy.mode,
         heap_before=heap_before,
-        survivors=len(result.survivors),
+        survivors=len(result.survivors) + len(result.inbox),
         candidates=len(result.candidates),
         collected=len(out.collected),
         revived=len(out.revived),
         released_pct=round(
-            100 * len(out.collected) / (len(result.survivors) + len(result.candidates)), 1
+            100 * len(out.collected) / (len(result.survivors) + len(result.candidates) + len(result.inbox)), 1
         ),
         items=[
             (c.task.persisted_id, c.reason.value, actions[c.task.persisted_id])
@@ -553,28 +598,11 @@ def cmd_restore(store: Store, args: argparse.Namespace) -> int:
     Returns:
         int: exit code; returns 1 if the task doesn't exist.
     """
-    t = store.get_task(args.id, record_view=False)
-    if t is None:
-        print(_t("cli.error.not_found", id=args.id), file=sys.stderr)
+    try:
+        store.restore_task(args.id, root_id=args.root_id, heap_max=args.heap_max, force=args.force)
+    except ValueError as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
         return 1
-    if t.state is not State.COLLECTED:
-        print(_t("cli.restore.not_collected", id=args.id), file=sys.stderr)
-        return 1
-    if args.root_id is not None:
-        try:
-            root = store.get_task(args.root_id, record_view=False)
-            if root is None or not root.state.is_active:
-                raise ValueError(_t("cli.restore.invalid_root", root_id=args.root_id))
-            if args.root_id == args.id:
-                raise ValueError(_t("cli.restore.self_link"))
-            store.validate_parent(args.id, args.root_id)
-            t.root_id = args.root_id
-        except ValueError as exc:
-            print(_t("cli.error", error=exc), file=sys.stderr)
-            return 1
-    t.state = State.LIVE
-    store.update_task(t)
-    store.record(args.id, TouchKind.RESTORE)
     print(_t("cli.restore.done", id=args.id))
     return 0
 
@@ -588,6 +616,8 @@ def cmd_show(store: Store, args: argparse.Namespace) -> int:
     task_id = task.persisted_id
     roots = store.root_ids()
     print(f"#{task_id} {task.title}")
+    if task.in_inbox:
+        print(_t("inbox.details", time=task.inbox_since.isoformat() if task.inbox_since else "-"))
     if task.completed_at is not None:
         print(f"  completed={task.completed_at.isoformat()}")
     print(
@@ -720,6 +750,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help=_t("cli.help.add_force"))
     p.set_defaults(func=cmd_add)
 
+    p = sub.add_parser("capture", help=_t("cli.help.cmd_capture"))
+    p.add_argument("title")
+    p.add_argument("--force", action="store_true", help=_t("cli.help.add_force"))
+    p.set_defaults(func=cmd_capture)
+
+    p = sub.add_parser("inbox", help=_t("cli.help.cmd_inbox"))
+    p.add_argument("--move", type=int, default=None, help=_t("cli.help.inbox_move"))
+    p.set_defaults(func=cmd_inbox)
+
+    p = sub.add_parser("discard", help=_t("cli.help.cmd_discard"))
+    p.add_argument("id", type=int)
+    p.add_argument("note", nargs="?", default=None)
+    p.set_defaults(func=cmd_discard)
+
     p = sub.add_parser("tree", help=_t("cli.help.cmd_tree"))
     p.add_argument("--show-completed", action="store_true", help=_t("webapp.tree.show_completed"))
     p.set_defaults(func=cmd_tree)
@@ -788,6 +832,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("restore", help=_t("cli.help.cmd_restore"))
     p.add_argument("id", type=int)
     p.add_argument("--root-id", type=int, default=None, help=_t("cli.help.restore_root_id"))
+    p.add_argument("--force", action="store_true", help=_t("cli.help.add_force"))
     p.set_defaults(func=cmd_restore)
 
     p = sub.add_parser("show", help=_t("cli.help.cmd_show"))

@@ -45,7 +45,7 @@ def build_task_tree(tasks: Iterable[Task], root_ids: set[int], *, show_completed
         if task.state.is_active or (show_completed and task.state is State.DONE)
     }
     parents = {
-        tid: task.root_id if task.root_id in visible else None
+        tid: task.root_id if task.root_id in visible and not task.in_inbox and not visible[task.root_id].in_inbox else None
         for tid, task in visible.items()
     }
     # Older versions allowed containment cycles. Break one display edge per cycle so
@@ -67,13 +67,13 @@ def build_task_tree(tasks: Iterable[Task], root_ids: set[int], *, show_completed
         visited.update(chain)
 
     children: dict[int, list[int]] = defaultdict(list)
-    groups: dict[str, list[int]] = {"goals": [], "unlinked": [], "meta": []}
+    groups: dict[str, list[int]] = {"inbox": [], "goals": [], "unlinked": [], "meta": []}
     for tid in sorted(visible):
         parent = parents[tid]
         if parent is not None:
             children[parent].append(tid)
         else:
-            group = "goals" if tid in root_ids else "meta" if visible[tid].is_meta else "unlinked"
+            group = "inbox" if visible[tid].in_inbox else "goals" if tid in root_ids else "meta" if visible[tid].is_meta else "unlinked"
             groups[group].append(tid)
     return TaskTree(visible, parents, dict(children), groups, repaired)
 
@@ -81,6 +81,10 @@ def build_task_tree(tasks: Iterable[Task], root_ids: set[int], *, show_completed
 def task_label(task: Task, root_ids: set[int], *, now: datetime, lang: str | None = None) -> str:
     marker = "✓" if task.state is State.DONE else "★" if task.id in root_ids else "⊛" if task.is_meta else "○"
     text = f"{marker} #{task.id} {task.title}"
+    if task.in_inbox and task.state.is_active:
+        text += " · " + _t("inbox.age", lang=lang, days=task.inbox_days(now))
+        if task.needs_inbox_review(now):
+            text += " · " + _t("inbox.needs_review", lang=lang)
     return text
 
 

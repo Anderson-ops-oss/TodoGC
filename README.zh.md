@@ -58,6 +58,8 @@ todogc dep 4 3                               # #4 的理由是 #3 —— 成环
 todogc ls                                    # 看看你的堆
 todogc tree                                  # 终端任务树，不增加 view
 todogc tree --show-completed                 # 同时显示已完成节点
+todogc capture "探索浏览器扩展"              # 快速记录到想法收件箱
+todogc inbox                                 # 查看待整理想法及停留时间
 todogc heap                                  # 堆内存图：分代分布 + -Xmx 占用 + 僵尸标红(别名 jmap)
 todogc web                                   # 把这张堆图搬进浏览器 + 交互(需 [web]，见下)
 todogc watch                                 # 定时体检：状态跃迁/堆占用告警时推 ntfy(需 [notify]，见下)
@@ -148,7 +150,7 @@ max = 50
 `soft` 使用常规活跃度规则；`weak` 必须在时间窗内有真推进。推进、编辑、复活和恢复会
 清零“连续推迟”，但历史累计推迟仍保留用于审计；恢复任务默认享有 7 天宽限期。
 
-数据库会自动从旧版迁移到 schema v5；迁移文件库前先生成同目录 `.bak`。真实执行的 GC
+数据库会自动从旧版迁移；迁移文件库前先生成同目录 `.bak`。真实执行的 GC
 写入审计历史，`heap` 与 `gc --dry-run` 始终只读。
 
 ## 定时体检(ntfy 推送)
@@ -225,7 +227,8 @@ todogc reopen 2
 todogc reopen 2 --root-id 3
 ```
 
-普通 `ls` 只展示活跃任务，也只为这些任务增加 view。已完成任务不参与 GC、doctor 或 watch
+普通 `ls` 只展示收件箱以外的活跃任务，也只为这些任务增加 view；`inbox` 单独列出待整理想法。
+已完成任务不参与 GC、doctor 或 watch
 检查，需重新打开后才能继续推进、编辑或推迟。重新打开保留分代、Root 身份和历史，并提供
 默认 7 天宽限期；它会检查容量，也不会自动重新打开子任务。
 
@@ -239,12 +242,41 @@ todogc done 1 --with-subtasks
 网页端对应 **Mark as done**、包含未完成子任务的勾选项，以及 **Completed / Reopen**。
 完成最后一个子任务不会自动完成父目标。
 
+## 想法收件箱
+
+Inbox 用于记录尚未决定归属的想法，与普通未关联任务 Unlinked 分开。旧任务不会自动移入。
+
+```bash
+todogc capture "探索一个浏览器扩展"
+todogc inbox
+todogc inbox --move 7             # 明确移入一个现有独立、未关联任务
+```
+
+使用实际返回的任务编号，选择以下一种处理方式：
+
+```bash
+todogc link 7 1                   # 关联到活跃父任务，移出收件箱
+todogc root 7                     # 确认为目标，移出收件箱
+todogc done 7                     # 直接完成，保留完成历史
+todogc discard 7 "暂不推进"       # 放弃并移入墓园，可恢复
+```
+
+网页端使用树上方的 **Capture idea**，选中想法后可整理、设为目标、完成或放弃；普通
+Unlinked 任务可通过 **Move to Inbox** 明确移入。收件箱想法需要先整理，才能作为父任务。
+
+每条想法显示停留天数，满 7 天标记 **Needs review**，不会自动删除。收件箱仍计入容量，
+但不参加 GC 候选判定和泄漏诊断；堆图单独显示其容量。记录、查看和整理不增加推进次数或 view。
+
+从墓园恢复或从已完成列表重新打开，会返回原来的收件箱，保留历史并重置待整理计时；
+明确提供 `--root-id` 则直接转为父任务下的普通任务。恢复与重新打开均检查容量，CLI 可用
+`--force` 明确超配。
+
 ## 任务树
 
 `todogc web` 首屏显示任务树和详情面板。点击箭头展开、收起多层子任务，点击节点查看路径、
 分代和操作历史；窄屏下树与详情上下排列。
 
-- **Goals / Unlinked / Meta-tasks** 分组展示顶层任务，树的层级只使用父子关联，不使用理由边。
+- **Inbox / Goals / Unlinked / Meta-tasks** 分组展示顶层任务，树的层级只使用父子关联，不使用理由边。
 - **Add subtask** 在当前活跃任务下新增子任务，自动选择新节点，并遵守容量限制。
 - **Move to** 按编号和名称选择活跃父任务，排除自己和后代；选择无父任务可解除关联。
 - **Show completed** 显示带完成标记的节点，可查看历史或重新打开。
@@ -304,8 +336,8 @@ pytest
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # 产出 dist/todogc-0.6.0-py3-none-any.whl 与 .tar.gz
-pip install dist/todogc-0.6.0-py3-none-any.whl   # 到哪都能装
+python -m build          # 产出 dist/todogc-0.7.0-py3-none-any.whl 与 .tar.gz
+pip install dist/todogc-0.7.0-py3-none-any.whl   # 到哪都能装
 ```
 
 `dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。
