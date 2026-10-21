@@ -39,7 +39,9 @@ class TaskTree:
                 stack.extend((child, depth + 1) for child in reversed(children))
 
 
-def build_task_tree(tasks: Iterable[Task], root_ids: set[int], *, show_completed: bool = False) -> TaskTree:
+def build_task_tree(tasks: Iterable[Task], root_ids: set[int], *, show_completed: bool = False,
+                    show_snoozed: bool = False, now: datetime | None = None) -> TaskTree:
+    now = now or datetime.now(timezone.utc)
     visible = {
         task.persisted_id: task for task in tasks
         if task.state.is_active or (show_completed and task.state is State.DONE)
@@ -66,6 +68,19 @@ def build_task_tree(tasks: Iterable[Task], root_ids: set[int], *, show_completed
             repaired = True
         visited.update(chain)
 
+    if not show_snoozed:
+        # Keep sleeping ancestors only as path context for visible descendants.
+        keep: set[int] = set()
+        for start, task in visible.items():
+            if task.is_snoozed(now):
+                continue
+            current = start
+            while current is not None and current not in keep:
+                keep.add(current)
+                current = parents[current]
+        visible = {tid: task for tid, task in visible.items() if tid in keep}
+        parents = {tid: parent for tid, parent in parents.items() if tid in keep}
+
     children: dict[int, list[int]] = defaultdict(list)
     groups: dict[str, list[int]] = {"inbox": [], "goals": [], "unlinked": [], "meta": []}
     for tid in sorted(visible):
@@ -81,6 +96,9 @@ def build_task_tree(tasks: Iterable[Task], root_ids: set[int], *, show_completed
 def task_label(task: Task, root_ids: set[int], *, now: datetime, lang: str | None = None) -> str:
     marker = "✓" if task.state is State.DONE else "★" if task.id in root_ids else "⊛" if task.is_meta else "○"
     text = f"{marker} #{task.id} {task.title}"
+    if task.is_snoozed(now):
+        assert task.snoozed_until is not None
+        text += " · " + _t("snooze.until", lang=lang, time=task.snoozed_until.astimezone().isoformat(timespec="minutes"))
     if task.in_inbox and task.state.is_active:
         text += " · " + _t("inbox.age", lang=lang, days=task.inbox_days(now))
         if task.needs_inbox_review(now):
@@ -90,11 +108,11 @@ def task_label(task: Task, root_ids: set[int], *, now: datetime, lang: str | Non
 
 def format_task_tree(
     tasks: Iterable[Task], root_ids: set[int], *, show_completed: bool = False,
-    now: datetime | None = None, lang: str | None = None,
+    show_snoozed: bool = False, now: datetime | None = None, lang: str | None = None,
 ) -> str:
     """Render a terminal tree from the same hierarchy as the Web UI, without recording views."""
     now = now or datetime.now(timezone.utc)
-    tree = build_task_tree(tasks, root_ids, show_completed=show_completed)
+    tree = build_task_tree(tasks, root_ids, show_completed=show_completed, show_snoozed=show_snoozed, now=now)
     if not tree.tasks:
         return _t("cli.tree.empty", lang=lang)
     lines = [_t("cli.tree.title", lang=lang)]

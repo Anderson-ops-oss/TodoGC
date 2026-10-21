@@ -36,7 +36,7 @@ def test_terminal_tree_hierarchy_completion_and_read_only(tmp_path, capsys):
 def test_terminal_tree_empty_and_legacy_cycle_are_safe(tmp_path, capsys):
     db = str(tmp_path / "tree.db")
     assert main(["--db", db, "tree"]) == 0
-    assert "No active tasks" in capsys.readouterr().out
+    assert "No visible tasks" in capsys.readouterr().out
     with Store(db) as store:
         a = store.add_task("First")
         b = store.add_task("Second", root_id=a.id)

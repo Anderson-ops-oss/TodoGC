@@ -49,14 +49,14 @@ def test_old_database_migrates_and_backs_up(tmp_path, now):
     db = tmp_path / "old.db"
     _old_database(db, now)
     with Store(db) as store:
-        assert store.schema_version == 6
+        assert store.schema_version == 7
         task = store.get_task(1, record_view=False)
         assert task.ref_strength is ReferenceStrength.SOFT
         assert store.gc_runs() == []
     assert (tmp_path / "old.db.bak").exists()
     # Reopening is idempotent and must not corrupt the data.
     with Store(db) as store:
-        assert store.schema_version == 6
+        assert store.schema_version == 7
         assert store.get_task(1, record_view=False).title == "旧任务"
 
 

@@ -17,7 +17,9 @@ from datetime import datetime, timedelta, timezone
 from todogc.collector import Candidate, Collector, GCPolicy, Reason
 from todogc.config import AppConfig
 from todogc.i18n import n_, t
+from todogc.heap import Task
 from todogc.notify import NotifyError, NtfyChannel
+from todogc.scheduling import local_time
 from todogc.store import Store
 
 logger = logging.getLogger(__name__)
@@ -98,6 +100,7 @@ class TickResult:
     heap_size: int = 0
     heap_max: int = 0
     heap_alarm: bool = False
+    wakeups: list[Task] = field(default_factory=list)
 
     @property
     def heap_pct(self) -> int:
@@ -175,11 +178,20 @@ def run_tick(store: Store, config: AppConfig, *, now: datetime | None = None) ->
         candidate_count=len(result.candidates),
         heap_size=heap_size,
         heap_max=config.heap_max,
+        wakeups=store.due_snoozes(now),
     )
     now_alarmed = tick.heap_pct >= config.watch_heap_threshold_pct
     tick.heap_alarm = now_alarmed and not was_alarmed
     store.watch_meta_set("heap_alarm_active", "1" if now_alarmed else "0")
     return tick
+
+
+def _snooze_message(tasks: list[Task], *, lang: str) -> tuple[str, str]:
+    title = t("snooze.push.title", lang=lang, count=len(tasks))
+    body = "\n".join(t("snooze.push.line", lang=lang, id=task.id, title=task.title,
+                       time=local_time(task.snoozed_until))
+                     for task in tasks if task.snoozed_until is not None)
+    return title, body
 
 
 def _event_message(result: TickResult, *, lang: str) -> tuple[str, str]:
@@ -294,10 +306,11 @@ class Watcher:
                 if elapsed >= self._config.watch_poll_seconds:
                     self._run_once(store, now)
                     elapsed = 0
-                slept = self._stop.wait(min(_HEARTBEAT_SECONDS, self._config.watch_poll_seconds))
+                interval = min(_HEARTBEAT_SECONDS, self._config.watch_poll_seconds - elapsed)
+                slept = self._stop.wait(interval)
                 if slept:
                     break
-                elapsed += _HEARTBEAT_SECONDS
+                elapsed += interval
         finally:
             store.release_watch_lock(self._pid)
             store.close()
@@ -306,6 +319,10 @@ class Watcher:
         """Run one tick and send out whatever's worth pushing; a push failure only warns, it never breaks the loop."""
         result = run_tick(store, self._config, now=now)
         lang = self._config.lang
+        if result.wakeups:
+            if self._safe_send(*_snooze_message(result.wakeups, lang=lang), priority=3, tags=["alarm_clock"]):
+                for task in result.wakeups:
+                    store.acknowledge_snooze(task)
         if result.events:
             self._safe_send(*_event_message(result, lang=lang), priority=4, tags=["skull"])
         if result.heap_alarm:
@@ -321,9 +338,11 @@ class Watcher:
             return True
         return (now - datetime.fromisoformat(raw)).total_seconds() >= self._config.watch_digest_seconds
 
-    def _safe_send(self, title: str, message: str, *, priority: int, tags: list[str]) -> None:
+    def _safe_send(self, title: str, message: str, *, priority: int, tags: list[str]) -> bool:
         """Send a push notification; a network/server failure only logs a warning, never lets a notification take down the checkup loop."""
         try:
             self._channel.send(title, message, priority=priority, tags=tags)
+            return True
         except NotifyError as exc:
             logger.warning(t("watcher.push.failed", lang=self._config.lang, title=title, error=exc))
+            return False

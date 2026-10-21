@@ -14,7 +14,7 @@
 A normal todo app helps you **add** tasks; TodoGC helps you **honestly delete** them.
 
 A task that stays long-term "unreachable" from your real goals (never progressed,
-repeatedly snoozed) gets flagged as garbage, triggering a ceremony that forces you
+repeatedly deferred) gets flagged as garbage, triggering a ceremony that forces you
 to pick one: **revive** it, or admit you're never doing it.
 
 *([Optional Chinese documentation](README.zh.md))*
@@ -191,7 +191,7 @@ ntfy_enabled = true
 ntfy_topic = "your-topic"        # pick something hard to guess; ntfy_token only needed for protected topics
 
 [watch]
-poll_seconds = 1800              # how often to check
+poll_seconds = 60                # check every minute (default)
 digest_seconds = 86400           # send a heartbeat digest periodically even with no new events
 remind_days = 7                  # re-remind after this many days if a candidate's state hasn't changed
 heap_threshold_pct = 80          # heap usage alert threshold (%)
@@ -201,6 +201,7 @@ The push design is **event-driven**, not heartbeat noise — modeled on how a re
 only logs when a collection actually happens. `todogc watch` only pushes on the
 following "transitions" (unchanged candidate count/state stays silent):
 
+- A snoozed task reaches its scheduled return time (one reminder per schedule; failed delivery is retried).
 - A task transitions from alive to a candidate (new zombie / new orphan / new cycle).
 - A candidate's state itself changes (e.g. from stale to trapped in a cycle).
 - The same candidate state has persisted too long (past `remind_days` unhandled) — the
@@ -292,6 +293,50 @@ active parent. Reopening respects the heap cap; the CLI's `reopen --force` expli
 allows over-allocation. Completing and reopening never delete audit history.
 
 Existing databases migrate automatically on first open, with a `.bak` created before migration.
+
+## Scheduled Snooze
+
+Snooze hides a task until a specific time. It remains unfinished, retains its parent,
+root identity and generation, and still occupies heap capacity. While snoozed it is
+protected from GC and excluded from leak diagnosis and candidate reminders.
+
+```bash
+todogc snooze 4 --for 2h
+todogc snooze 4 --for 3d --note "Waiting for feedback"
+todogc snooze 4 --until "2026-10-25 09:00"
+todogc snooze 1 --for 1w --with-subtasks
+
+todogc snoozed                      # read-only list with return times
+todogc tree --show-snoozed           # include snoozed nodes
+todogc unsnooze 4                   # wake this task early
+todogc unsnooze 1 --with-subtasks    # also wake snoozed unfinished descendants
+```
+
+Durations use `m`, `h`, `d` or `w`; `1d` means exactly 24 hours. Absolute times use
+the machine's local timezone unless an explicit UTC offset is supplied, such as
+`2026-10-25T09:00+09:00`. Confirmations show the offset; schedules are stored in UTC.
+Only future times are accepted. Repeating `snooze` replaces the current schedule.
+
+Default `ls`, `inbox` and task-tree views hide snoozed tasks. A snoozed parent remains
+in the tree as labeled path context when it has visible descendants; those descendants
+keep their reachability. Only `--with-subtasks` snoozes unfinished descendants too.
+In the Web UI, select a task or idea and open **Snooze** to choose a duration or date/time.
+Use **Show snoozed tasks**, **Reschedule**, and **Wake now** to manage existing schedules.
+
+Tasks return automatically on the next command or Web refresh after the deadline;
+no background process is needed for visibility. Waking gives a 7-day GC grace period,
+measured from the scheduled deadline, or from the early wake time for `unsnooze`.
+Completion and discarding cancel the schedule. Snooze, wake and snoozed-list/tree
+browsing do not add progress, skip counts, views or generation age. Old skip history
+is retained: use `todogc defer 4 "Not now"` to record one skip without a timed pause.
+The old time-less `snooze ID` form now requires `--for` or `--until`.
+
+For active reminders, run `todogc watch` with ntfy configured, or enable the Web
+watcher. It checks every **60 seconds** by default and bundles due tasks in one
+notification. Successful deliveries are remembered across restarts; failed deliveries
+are retried on the next check. Checks do not send a notification every minute.
+Existing explicit `watch.poll_seconds` or `TODOGC_WATCH_POLL_SECONDS` settings take
+precedence; change an old `1800` setting to `60` to use one-minute checks.
 
 ## Inbox
 
@@ -436,8 +481,8 @@ Zero core dependencies — packs into a standard wheel/sdist for direct distribu
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # produces dist/todogc-0.7.0-py3-none-any.whl and .tar.gz
-pip install dist/todogc-0.7.0-py3-none-any.whl   # install it anywhere
+python -m build          # produces dist/todogc-0.8.0-py3-none-any.whl and .tar.gz
+pip install dist/todogc-0.8.0-py3-none-any.whl   # install it anywhere
 ```
 
 `dist/`, `build/`, `*.egg-info/` are all in `.gitignore` — build artifacts aren't

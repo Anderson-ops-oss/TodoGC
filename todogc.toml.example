@@ -17,7 +17,7 @@ ntfy_topic = ""
 # ntfy_token = ""          # only needed for a protected topic; prefer the TODOGC_NTFY_TOKEN env var, don't commit a secret into this file
 
 [watch]
-poll_seconds = 1800        # poll interval (seconds): how often to run a liveness check, computing doesn't always mean pushing
+poll_seconds = 60        # poll interval (seconds): how often to run a liveness check, computing doesn't always mean pushing
 digest_seconds = 86400     # heartbeat digest interval (seconds): reports in periodically even with no new events
 remind_days = 7            # when a candidate's status hasn't changed, how many days before reminding again (don't remind once and go silent)
 heap_threshold_pct = 80    # heap-usage alert threshold (%), only alerts once when crossing this line (edge-triggered, not spammed continuously)

@@ -20,6 +20,7 @@ from todogc.heap import ReferenceStrength, State, TouchKind
 from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES, set_locale
 from todogc.i18n import t as _t
 from todogc.store import Store
+from todogc.scheduling import local_time, parse_snooze_time
 from todogc.tree import format_task_tree, task_label
 from todogc.watcher import Watcher
 
@@ -96,7 +97,7 @@ def run_ceremony(
         assert task.id is not None
         choice = decide(cand)
         current = store.get_task(task.id, record_view=False)
-        if current is None or not current.state.is_active or current.in_inbox:
+        if current is None or not current.state.is_active or current.in_inbox or current.is_snoozed(now):
             out.skipped.append(task.id)
             continue
         task = current
@@ -240,7 +241,8 @@ def cmd_ls(store: Store, args: argparse.Namespace) -> int:
         tasks = [c.task for c in result.candidates]
     else:
         state = State(args.state) if args.state else None
-        tasks = store.list_tasks(state=state, active_only=state is None, inbox=False if state is None else None)
+        tasks = store.list_tasks(state=state, active_only=state is None, inbox=False if state is None else None,
+                                 snoozed=False if state is None else None)
     roots = store.root_ids()
     if console.render_ls(tasks, roots):  # rich installed -> color table
         return 0
@@ -278,7 +280,38 @@ def cmd_progress(store: Store, args: argparse.Namespace) -> int:
 
 
 def cmd_snooze(store: Store, args: argparse.Namespace) -> int:
-    """snooze: defer a task (feeds skip_count).
+    """Schedule a task to return later; never counts as progress or a skip."""
+    try:
+        until = parse_snooze_time(duration=args.duration, until=args.until)
+        ids = store.snooze_task(args.id, until, with_subtasks=args.with_subtasks, note=args.note)
+    except ValueError as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
+        return 1
+    print(_t("snooze.scheduled", count=len(ids), time=local_time(until)))
+    return 0
+
+
+def cmd_unsnooze(store: Store, args: argparse.Namespace) -> int:
+    try:
+        ids = store.unsnooze_task(args.id, with_subtasks=args.with_subtasks)
+    except ValueError as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
+        return 1
+    print(_t("snooze.woken", count=len(ids)))
+    return 0
+
+
+def cmd_snoozed(store: Store, args: argparse.Namespace) -> int:
+    now = datetime.now(timezone.utc)
+    tasks = store.list_tasks(active_only=True, snoozed=True, record_view=False, ts=now)
+    print(_t("snooze.list_title", count=len(tasks)))
+    for task in tasks:
+        print(task_label(task, store.root_ids(), now=now))
+    return 0
+
+
+def cmd_defer(store: Store, args: argparse.Namespace) -> int:
+    """defer: record one skip without scheduling a wake-up.
 
     Args:
         store (Store): the data source.
@@ -348,7 +381,7 @@ def cmd_inbox(store: Store, args: argparse.Namespace) -> int:
         print(_t("inbox.moved", id=args.move))
         return 0
     now = datetime.now(timezone.utc)
-    tasks = store.list_tasks(active_only=True, inbox=True, record_view=False)
+    tasks = store.list_tasks(active_only=True, inbox=True, snoozed=False, record_view=False, ts=now)
     print(_t("inbox.list_title", count=len(tasks)))
     if not tasks:
         print(_t("inbox.empty"))
@@ -370,7 +403,7 @@ def cmd_discard(store: Store, args: argparse.Namespace) -> int:
 def cmd_tree(store: Store, args: argparse.Namespace) -> int:
     print(format_task_tree(
         store.list_tasks(record_view=False), store.root_ids(active_only=False),
-        show_completed=args.show_completed,
+        show_completed=args.show_completed, show_snoozed=args.show_snoozed,
     ))
     return 0
 
@@ -618,6 +651,9 @@ def cmd_show(store: Store, args: argparse.Namespace) -> int:
     print(f"#{task_id} {task.title}")
     if task.in_inbox:
         print(_t("inbox.details", time=task.inbox_since.isoformat() if task.inbox_since else "-"))
+    if task.snoozed_until is not None:
+        print(_t("snooze.until" if task.is_snoozed(datetime.now(timezone.utc)) else "snooze.returned",
+                 time=local_time(task.snoozed_until)))
     if task.completed_at is not None:
         print(f"  completed={task.completed_at.isoformat()}")
     print(
@@ -766,6 +802,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("tree", help=_t("cli.help.cmd_tree"))
     p.add_argument("--show-completed", action="store_true", help=_t("webapp.tree.show_completed"))
+    p.add_argument("--show-snoozed", action="store_true", help=_t("snooze.show"))
     p.set_defaults(func=cmd_tree)
 
     p = sub.add_parser("root", help=_t("cli.help.cmd_root"))
@@ -790,8 +827,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("snooze", help=_t("cli.help.cmd_snooze"))
     p.add_argument("id", type=int)
-    p.add_argument("note", nargs="?", default=None)
+    timing = p.add_mutually_exclusive_group(required=True)
+    timing.add_argument("--for", dest="duration", help=_t("snooze.help.for"))
+    timing.add_argument("--until", help=_t("snooze.help.until"))
+    p.add_argument("--note", default=None)
+    p.add_argument("--with-subtasks", action="store_true", help=_t("snooze.help.subtasks"))
     p.set_defaults(func=cmd_snooze)
+
+    p = sub.add_parser("snoozed", help=_t("snooze.help.list"))
+    p.set_defaults(func=cmd_snoozed)
+
+    p = sub.add_parser("unsnooze", help=_t("snooze.help.unsnooze"))
+    p.add_argument("id", type=int)
+    p.add_argument("--with-subtasks", action="store_true", help=_t("snooze.help.subtasks"))
+    p.set_defaults(func=cmd_unsnooze)
+
+    p = sub.add_parser("defer", help=_t("snooze.help.defer"))
+    p.add_argument("id", type=int)
+    p.add_argument("note", nargs="?", default=None)
+    p.set_defaults(func=cmd_defer)
 
     p = sub.add_parser("done", help=_t("cli.help.cmd_done"))
     p.add_argument("id", type=int)

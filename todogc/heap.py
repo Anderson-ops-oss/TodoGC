@@ -14,6 +14,7 @@ from todogc.i18n import t as _t
 # -XX:MaxTenuringThreshold defaults to 15 too. Fifteen rounds of self-deception earns tenure.
 TENURING_THRESHOLD: int = 15
 INBOX_REVIEW_DAYS: int = 7
+SNOOZE_GRACE_DAYS: int = 7
 
 
 class TouchKind(str, Enum):
@@ -33,6 +34,8 @@ class TouchKind(str, Enum):
     CAPTURE = "capture"    # an idea recorded before committing to it
     INBOX = "inbox"        # explicitly moved into the Inbox
     ORGANIZE = "organize"  # an Inbox idea committed to a goal or parent
+    SNOOZE = "snooze"      # scheduled pause, without a skip or progress credit
+    UNSNOOZE = "unsnooze"  # explicit early wake; scheduled expiry needs no write
 
     @property
     def is_progress(self) -> bool:
@@ -152,6 +155,10 @@ class Task:
     ref_strength: ReferenceStrength = ReferenceStrength.SOFT
     completed_at: datetime | None = None
     inbox_since: datetime | None = None
+    snoozed_until: datetime | None = None
+
+    def is_snoozed(self, now: datetime) -> bool:
+        return self.state.is_active and self.snoozed_until is not None and now < self.snoozed_until
 
     @property
     def in_inbox(self) -> bool:
@@ -162,7 +169,7 @@ class Task:
         return max(0, (now - self.inbox_since).days) if self.inbox_since else 0
 
     def needs_inbox_review(self, now: datetime) -> bool:
-        return self.state.is_active and self.in_inbox and self.inbox_days(now) >= INBOX_REVIEW_DAYS
+        return self.state.is_active and not self.is_snoozed(now) and self.in_inbox and self.inbox_days(now) >= INBOX_REVIEW_DAYS
 
     @property
     def is_unlinked(self) -> bool:

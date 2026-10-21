@@ -19,6 +19,7 @@ from todogc.i18n import SUPPORTED_LOCALES
 from todogc.i18n import t as _t
 from todogc.report import HeapRow, RowKind
 from todogc.store import Store
+from todogc.scheduling import local_time, parse_snooze_time
 from todogc.tree import TaskTree, build_task_tree, task_label
 from todogc.watcher import Watcher
 
@@ -128,6 +129,9 @@ def _row_markup(row: HeapRow, *, lang: str | None = None) -> str:
     tid = row.task.id
     title = html.escape(row.task.title)
     color = _ROW_COLOR.get(row.kind)
+    if row.kind is RowKind.SNOOZED and row.task.snoozed_until is not None:
+        note = html.escape(_t("snooze.until", lang=lang, time=local_time(row.task.snoozed_until)))
+        return f'<span style="color:#777">⏸ #{tid} {title} · {note}</span>'
     if row.kind is RowKind.ZOMBIE:
         note = html.escape(report.candidate_note(row.candidate, lang=lang)) if row.candidate is not None else ""
         return (
@@ -482,6 +486,41 @@ def _render_task_history(store: Store, task_id: int, *, lang: str) -> None:
             st.code(f"{touch.ts.isoformat()}  {touch.kind.value}" + (f" · {touch.note}" if touch.note else ""), language=None)
 
 
+def _render_snooze(store: Store, task: Task, now: datetime, *, lang: str) -> None:
+    tid = task.persisted_id
+    sleeping = task.is_snoozed(now)
+    with st.expander(_t("snooze.web.title", lang=lang), expanded=sleeping):
+        if sleeping:
+            assert task.snoozed_until is not None
+            st.info(_t("snooze.until", lang=lang, time=local_time(task.snoozed_until)))
+            st.caption(_t("snooze.web.context", lang=lang))
+        mode = st.selectbox(
+            _t("snooze.web.mode", lang=lang), ["duration", "until"], key=f"snooze_mode_{tid}",
+            format_func=lambda value: _t(f"snooze.web.{value}", lang=lang),
+        )
+        value = st.text_input(
+            _t(f"snooze.web.{mode}_input", lang=lang), key=f"snooze_time_{tid}_{mode}",
+            value="1d" if mode == "duration" else "", placeholder="2026-10-25 09:00" if mode == "until" else "2h",
+        )
+        st.caption(_t("snooze.web.time_hint", lang=lang, time=local_time(now)))
+        note = st.text_input(_t("webapp.task_manager.note_label", lang=lang), key=f"snooze_note_{tid}")
+        subtasks = st.checkbox(_t("snooze.help.subtasks", lang=lang), key=f"snooze_subtasks_{tid}")
+        if st.button(_t("snooze.web.reschedule" if sleeping else "snooze.web.title", lang=lang), key=f"snooze_{tid}"):
+            try:
+                until = parse_snooze_time(duration=value if mode == "duration" else None,
+                                           until=value if mode == "until" else None, now=now)
+                store.snooze_task(tid, until, with_subtasks=subtasks, note=note, ts=now)
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+        if sleeping and st.button(_t("snooze.web.wake", lang=lang), key=f"unsnooze_{tid}"):
+            try:
+                store.unsnooze_task(tid, with_subtasks=subtasks, ts=now)
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+
+
 def _render_task_details(store: Store, task: Task, heap_max: int, now: datetime, *, lang: str) -> None:
     """Operate on the selected node; selection and browsing never record view events."""
     task_id = task.persisted_id
@@ -675,8 +714,10 @@ def _render_task_tree(store: Store, heap_max: int, now: datetime, *, lang: str) 
     )
     _render_capture(store, heap_max, now, lang=lang)
     show_completed = st.checkbox(_t("webapp.tree.show_completed", lang=lang), key="tree_show_completed")
+    show_snoozed = st.checkbox(_t("snooze.show", lang=lang), key="tree_show_snoozed")
     roots = store.root_ids(active_only=False)
-    tree = build_task_tree(store.list_tasks(record_view=False), roots, show_completed=show_completed)
+    tree = build_task_tree(store.list_tasks(record_view=False), roots, show_completed=show_completed,
+                           show_snoozed=show_snoozed, now=now)
     if not tree.tasks:
         st.info(_t("webapp.tree.empty", lang=lang))
         return
@@ -693,8 +734,12 @@ def _render_task_tree(store: Store, heap_max: int, now: datetime, *, lang: str) 
         st.caption(_t("webapp.tree.path", lang=lang))
         st.text(" / ".join(f"#{item.id} {item.title}" for item in tree.path(selected)))
         st.caption(_t("webapp.tree.generation_label", lang=lang, name=_t(f"webapp.tree.generation.{task.gen.value}", lang=lang)))
+        if task.state.is_active:
+            _render_snooze(store, task, now, lang=lang)
         if task.state is State.DONE:
             _render_selected_completed(store, task, heap_max, now, lang=lang)
+        elif task.is_snoozed(now):
+            _render_task_history(store, selected, lang=lang)
         elif task.in_inbox:
             _render_inbox_details(store, task, now, lang=lang)
         else:

@@ -165,9 +165,11 @@ def test_v5_migration_preserves_existing_locations_and_completion(tmp_path, now)
         done = store.add_task("Done", ts=now)
         store.complete_task(done.id, ts=now)
         store._conn.execute("ALTER TABLE task DROP COLUMN inbox_since")
+        store._conn.execute("ALTER TABLE task DROP COLUMN snoozed_until")
+        store._conn.execute("ALTER TABLE task DROP COLUMN snooze_notified_until")
         store._conn.execute("UPDATE schema_meta SET value = '5' WHERE key = 'schema_version'")
     with Store(path) as store:
-        assert store.schema_version == 6
+        assert store.schema_version == 7
         assert all(not task.in_inbox for task in store.list_tasks(record_view=False))
         assert store.get_task(done.id, record_view=False).completed_at == now
         result = Collector().run_on_store(store, store.root_ids(), now=now)

@@ -164,7 +164,7 @@ ntfy_enabled = true
 ntfy_topic = "你的-topic"        # 建议自建一个不容易被猜到的 topic 名；受保护 topic 才需要 ntfy_token
 
 [watch]
-poll_seconds = 1800              # 多久判活一次
+poll_seconds = 60                # 默认每分钟检查一次
 digest_seconds = 86400           # 没有新事件也定期报个平安
 remind_days = 7                  # 候选状态没变时，隔多少天再提醒一次
 heap_threshold_pct = 80          # 堆占用告警阈值(%)
@@ -241,6 +241,39 @@ todogc done 1 --with-subtasks
 
 网页端对应 **Mark as done**、包含未完成子任务的勾选项，以及 **Completed / Reopen**。
 完成最后一个子任务不会自动完成父目标。
+
+## 定时休眠
+
+Snooze 将任务隐藏至指定时间，保留父子关系、Root 身份和分代，仍占用容量。休眠期间
+不参与 GC 回收、泄漏诊断及僵尸提醒；不增加 progress、skip、view 或分代年龄。
+
+```bash
+todogc snooze 4 --for 2h
+todogc snooze 4 --for 3d --note "Waiting for feedback"
+todogc snooze 4 --until "2026-10-25 09:00"
+todogc snooze 1 --for 1w --with-subtasks
+todogc snoozed
+todogc tree --show-snoozed
+todogc unsnooze 4
+todogc unsnooze 1 --with-subtasks
+```
+
+时长支持 `m/h/d/w`，`1d` 为 24 小时。日期时间默认使用本地时区，可附 `+09:00` 等偏移；
+确认时显示偏移，数据库统一存 UTC，只接受未来时间。再次 snooze 会修改现有计划。
+默认 `ls`、`inbox` 和任务树隐藏休眠任务；仍有可见子任务的休眠父任务会作为路径保留，
+避免子任务丢失归属。仅指定 `--with-subtasks` 时才同时休眠未完成后代。
+
+网页在任务详情的 **Snooze** 中选择时长或日期时间，通过 **Show snoozed tasks** 查看，
+用 **Reschedule** 修改时间，或 **Wake now** 提前唤醒。
+到期后的下一次命令或网页刷新会自动显示任务，不依赖后台进程。唤醒后有 7 天 GC 宽限期，
+从预定唤醒时间计算；提前唤醒则从操作时间计算。完成或放弃会取消计划。
+原有 skip 历史保留，`todogc defer 4 "Not now"` 记录一次无定时的推迟；`snooze ID` 现在
+必须提供 `--for` 或 `--until`。
+
+主动提醒需要启用 ntfy 并运行 `watch` 或网页内置 watcher。默认每 **60 秒**检查一次，
+到期任务合并推送，成功后记住已发送状态，重启不重复，失败则下次重试，不会每分钟刷屏。
+已有 `watch.poll_seconds` 或 `TODOGC_WATCH_POLL_SECONDS` 配置优先；原来明确设为 `1800`
+的用户需要改成 `60` 才会使用每分钟检查。
 
 ## 想法收件箱
 
@@ -336,8 +369,8 @@ pytest
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # 产出 dist/todogc-0.7.0-py3-none-any.whl 与 .tar.gz
-pip install dist/todogc-0.7.0-py3-none-any.whl   # 到哪都能装
+python -m build          # 产出 dist/todogc-0.8.0-py3-none-any.whl 与 .tar.gz
+pip install dist/todogc-0.8.0-py3-none-any.whl   # 到哪都能装
 ```
 
 `dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。

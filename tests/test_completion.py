@@ -145,9 +145,11 @@ def test_v4_migration_preserves_data_and_backup_and_persists_completion(tmp_path
         store.progress(task.id, "Previous work", ts=now)
         store._conn.execute("ALTER TABLE task DROP COLUMN completed_at")
         store._conn.execute("ALTER TABLE task DROP COLUMN inbox_since")
+        store._conn.execute("ALTER TABLE task DROP COLUMN snoozed_until")
+        store._conn.execute("ALTER TABLE task DROP COLUMN snooze_notified_until")
         store._conn.execute("UPDATE schema_meta SET value = '4' WHERE key = 'schema_version'")
     with Store(path) as store:
-        assert store.schema_version == 6
+        assert store.schema_version == 7
         assert store.get_task(task.id, record_view=False).completed_at is None
         store.complete_task(task.id, ts=now)
     with sqlite3.connect(str(path) + ".bak") as backup:

@@ -25,7 +25,7 @@ def _db(tmp_path) -> str:
 
 
 def test_command_chain(tmp_path, capsys):
-    """The full add/root/dep/progress/snooze/ls/gc --dry-run chain exits 0 and persists correctly."""
+    """The full add/root/dep/progress/defer/ls/gc --dry-run chain exits 0 and persists correctly."""
     db = _db(tmp_path)
     assert main(["--db", db, "add", "上线X", "--root"]) == 0
     assert main(["--db", db, "add", "写模块", "--root-id", "1"]) == 0
@@ -34,7 +34,7 @@ def test_command_chain(tmp_path, capsys):
     assert main(["--db", db, "dep", "3", "4"]) == 0
     assert main(["--db", db, "dep", "4", "3"]) == 0
     assert main(["--db", db, "progress", "2"]) == 0
-    assert main(["--db", db, "snooze", "3"]) == 0
+    assert main(["--db", db, "defer", "3"]) == 0
     assert main(["--db", db, "ls"]) == 0
     assert main(["--db", db, "gc", "--dry-run"]) == 0
     assert "reference cycle" in capsys.readouterr().out

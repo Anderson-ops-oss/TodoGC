@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from todogc.heap import Generation, ReferenceStrength, State, Task, Touch, TouchKind
+from todogc.heap import SNOOZE_GRACE_DAYS, Generation, ReferenceStrength, State, Task, Touch, TouchKind
 from todogc.i18n import t as _t
 
 # Event type values counted toward refcount: reuses TouchKind.is_progress as the single
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS dep (
 CREATE INDEX IF NOT EXISTS idx_touch_task ON touch(task_id);
 """
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 
 @dataclass(frozen=True)
@@ -210,6 +210,10 @@ class Store:
         if version < 6:
             self._conn.execute("ALTER TABLE task ADD COLUMN inbox_since TEXT")
             version = 6
+        if version < 7:
+            self._conn.execute("ALTER TABLE task ADD COLUMN snoozed_until TEXT")
+            self._conn.execute("ALTER TABLE task ADD COLUMN snooze_notified_until TEXT")
+            version = 7
         self._conn.execute(
             "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -289,6 +293,7 @@ class Store:
             created_at=Store._from_iso(row["created_at"]),
             completed_at=Store._from_iso(row["completed_at"]) if row["completed_at"] else None,
             inbox_since=Store._from_iso(row["inbox_since"]) if row["inbox_since"] else None,
+            snoozed_until=Store._from_iso(row["snoozed_until"]) if row["snoozed_until"] else None,
         )
 
     @staticmethod
@@ -394,7 +399,10 @@ class Store:
             if not task.in_inbox:
                 raise ValueError(_t("inbox.error.not_inbox", id=task_id))
             iso = self._to_iso(ts or self._now())
-            self._conn.execute("UPDATE task SET state = ? WHERE id = ?", (State.COLLECTED.value, task_id))
+            self._conn.execute(
+                "UPDATE task SET state = ?, snoozed_until = NULL, snooze_notified_until = NULL WHERE id = ?",
+                (State.COLLECTED.value, task_id),
+            )
             self._conn.execute(
                 "INSERT INTO touch(task_id, kind, ts, note) VALUES (?, ?, ?, ?)",
                 (task_id, TouchKind.COLLECT.value, iso, note or _t("inbox.discard.default")),
@@ -405,8 +413,12 @@ class Store:
         """A stale interactive GC snapshot must not overwrite completion or Inbox triage."""
         with self._conn:
             changed = self._conn.execute(
-                "UPDATE task SET state = ? WHERE id = ? AND state IN (?, ?) AND inbox_since IS NULL",
-                (State.COLLECTED.value, task_id, State.LIVE.value, State.CANDIDATE.value),
+                "UPDATE task SET state = ? WHERE id = ? AND state IN (?, ?) AND inbox_since IS NULL "
+                "AND (snoozed_until IS NULL OR snoozed_until <= ?) "
+                "AND NOT EXISTS (SELECT 1 FROM touch WHERE touch.task_id = task.id AND kind = ? AND ts > ?)",
+                (State.COLLECTED.value, task_id, State.LIVE.value, State.CANDIDATE.value,
+                 self._to_iso(ts - timedelta(days=SNOOZE_GRACE_DAYS)), TouchKind.UNSNOOZE.value,
+                 self._to_iso(ts - timedelta(days=SNOOZE_GRACE_DAYS))),
             )
             if changed.rowcount == 0:
                 return False
@@ -475,6 +487,65 @@ class Store:
         self._require_live_task(task_id)
         return self.record(task_id, TouchKind.DEFER, note=note, ts=ts)
 
+    def snooze_task(self, task_id: int, until: datetime, *, with_subtasks: bool = False,
+                    note: str | None = None, ts: datetime | None = None) -> list[int]:
+        now = ts or self._now()
+        if until.tzinfo is None or until <= now:
+            raise ValueError(_t("snooze.error.future"))
+        with self._conn:
+            self._require_live_task(task_id)
+            ids = [task_id, *(task.persisted_id for task in self.active_descendants(task_id))] if with_subtasks else [task_id]
+            for tid in ids:
+                self._conn.execute(
+                    "UPDATE task SET snoozed_until = ?, snooze_notified_until = NULL WHERE id = ?",
+                    (self._to_iso(until), tid),
+                )
+                self._conn.execute(
+                    "INSERT INTO touch(task_id, kind, ts, note) VALUES (?, ?, ?, ?)",
+                    (tid, TouchKind.SNOOZE.value, self._to_iso(now), f"until={self._to_iso(until)}" + (f" · {note}" if note else "")),
+                )
+                self._conn.execute("DELETE FROM watch_state WHERE task_id = ?", (tid,))
+        return ids
+
+    def unsnooze_task(self, task_id: int, *, with_subtasks: bool = False,
+                      ts: datetime | None = None) -> list[int]:
+        now = ts or self._now()
+        with self._conn:
+            task = self._require_live_task(task_id)
+            tasks = [task, *self.active_descendants(task_id)] if with_subtasks else [task]
+            waking = [task for task in tasks if task.is_snoozed(now)]
+            if not waking:
+                raise ValueError(_t("snooze.error.not_snoozed", id=task_id))
+            for task in waking:
+                self._conn.execute(
+                    "UPDATE task SET snoozed_until = NULL, snooze_notified_until = NULL WHERE id = ?", (task.id,),
+                )
+                self._conn.execute(
+                    "INSERT INTO touch(task_id, kind, ts) VALUES (?, ?, ?)",
+                    (task.id, TouchKind.UNSNOOZE.value, self._to_iso(now)),
+                )
+                self._conn.execute("DELETE FROM watch_state WHERE task_id = ?", (task.id,))
+        return [task.persisted_id for task in waking]
+
+    def due_snoozes(self, now: datetime) -> list[Task]:
+        """Return expired schedules until their notification has been delivered successfully."""
+        rows = self._conn.execute(
+            "SELECT * FROM task WHERE state IN (?, ?) AND snoozed_until <= ? "
+            "AND (snooze_notified_until IS NULL OR snooze_notified_until != snoozed_until) ORDER BY id",
+            (State.LIVE.value, State.CANDIDATE.value, self._to_iso(now)),
+        ).fetchall()
+        return [self._row_to_task(row) for row in rows]
+
+    def acknowledge_snooze(self, task: Task) -> None:
+        """A concurrent reschedule must never be acknowledged as the old reminder."""
+        assert task.snoozed_until is not None
+        iso = self._to_iso(task.snoozed_until)
+        with self._conn:
+            self._conn.execute(
+                "UPDATE task SET snooze_notified_until = ? WHERE id = ? AND snoozed_until = ?",
+                (iso, task.id, iso),
+            )
+
     def link(self, task_id: int, root_id: int, ts: datetime | None = None) -> None:
         """(Re-)link a task to a GC root: updates root_id and logs a LINK event.
 
@@ -511,12 +582,13 @@ class Store:
         if task.id is None:
             raise ValueError(_t("store.error.update_requires_persisted"))
         self._conn.execute(
-            "UPDATE task SET title = ?, root_id = ?, gen = ?, age = ?, state = ?, ref_strength = ?, completed_at = ?, inbox_since = ? WHERE id = ?",
+            "UPDATE task SET title = ?, root_id = ?, gen = ?, age = ?, state = ?, ref_strength = ?, completed_at = ?, inbox_since = ?, snoozed_until = ? WHERE id = ?",
             (
                 task.title, task.root_id, task.gen.value, task.age, task.state.value,
                 task.ref_strength.value,
                 self._to_iso(task.completed_at) if task.completed_at else None,
-                self._to_iso(task.inbox_since) if task.inbox_since else None, task.id,
+                self._to_iso(task.inbox_since) if task.inbox_since else None,
+                self._to_iso(task.snoozed_until) if task.snoozed_until else None, task.id,
             ),
         )
         self._conn.commit()
@@ -607,7 +679,7 @@ class Store:
             iso = self._to_iso(ts or self._now())
             for tid in ids:
                 self._conn.execute(
-                    "UPDATE task SET state = ?, completed_at = ? WHERE id = ?",
+                    "UPDATE task SET state = ?, completed_at = ?, snoozed_until = NULL, snooze_notified_until = NULL WHERE id = ?",
                     (State.DONE.value, iso, tid),
                 )
                 self._conn.execute(
@@ -641,7 +713,7 @@ class Store:
             iso = self._to_iso(ts or self._now())
             inbox_since = iso if task.in_inbox and root_id is None else None
             self._conn.execute(
-                "UPDATE task SET state = ?, completed_at = NULL, root_id = ?, inbox_since = ? WHERE id = ?",
+                "UPDATE task SET state = ?, completed_at = NULL, root_id = ?, inbox_since = ?, snoozed_until = NULL, snooze_notified_until = NULL WHERE id = ?",
                 (State.LIVE.value, parent, inbox_since, task_id),
             )
             self._conn.execute(
@@ -653,6 +725,7 @@ class Store:
         task.completed_at = None
         task.root_id = parent
         task.inbox_since = self._from_iso(inbox_since) if inbox_since else None
+        task.snoozed_until = None
         return task
 
     def restore_task(
@@ -673,7 +746,7 @@ class Store:
             iso = self._to_iso(ts or self._now())
             inbox_since = iso if task.in_inbox and root_id is None else None
             self._conn.execute(
-                "UPDATE task SET state = ?, root_id = ?, inbox_since = ? WHERE id = ?",
+                "UPDATE task SET state = ?, root_id = ?, inbox_since = ?, snoozed_until = NULL, snooze_notified_until = NULL WHERE id = ?",
                 (State.LIVE.value, root_id if root_id is not None else task.root_id, inbox_since, task_id),
             )
             self._conn.execute(
@@ -817,6 +890,7 @@ class Store:
         state: State | None = None,
         active_only: bool = False,
         inbox: bool | None = None,
+        snoozed: bool | None = None,
         record_view: bool = True,
         ts: datetime | None = None,
     ) -> list[Task]:
@@ -842,6 +916,9 @@ class Store:
             params.extend((State.LIVE.value, State.CANDIDATE.value))
         if inbox is not None:
             conditions.append("inbox_since IS NOT NULL" if inbox else "inbox_since IS NULL")
+        if snoozed is not None:
+            conditions.append("snoozed_until > ?" if snoozed else "(snoozed_until IS NULL OR snoozed_until <= ?)")
+            params.append(self._to_iso(ts or self._now()))
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         rows = self._conn.execute("SELECT * FROM task" + where + " ORDER BY id", params).fetchall()
         tasks = [self._row_to_task(r) for r in rows]
@@ -939,7 +1016,7 @@ class Store:
                 break
             if touch.kind is TouchKind.DEFER:
                 count += 1
-            elif touch.kind not in {TouchKind.VIEW, TouchKind.LINK, TouchKind.CREATE}:
+            elif touch.kind not in {TouchKind.VIEW, TouchKind.LINK, TouchKind.CREATE, TouchKind.SNOOZE, TouchKind.UNSNOOZE}:
                 break
         return count
 

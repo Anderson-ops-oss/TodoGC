@@ -188,6 +188,7 @@ class RowKind(str, Enum):
     META = "meta"      # meta-task that permanently lives in Metaspace, marked ⊛
     ZOMBIE = "zombie"  # reclaim candidate (zombie), marked ☠, highlighted red
     NORMAL = "normal"  # ordinary live object, unmarked
+    SNOOZED = "snoozed"
 
 
 # RowKind -> prefix symbol in the text heap map.
@@ -196,6 +197,7 @@ _ROW_MARKER: dict[RowKind, str] = {
     RowKind.META: "⊛",
     RowKind.ZOMBIE: "☠",
     RowKind.NORMAL: " ",
+    RowKind.SNOOZED: "⏸",
 }
 
 
@@ -276,6 +278,7 @@ def heap_view(result: GCResult, roots: set[int]) -> list[HeapSection]:
             holds that generation's HeapRows, sorted ascending by id.
     """
     cand_of = {c.task.id: c for c in result.candidates}
+    snoozed_ids = {task.id for task in result.snoozed}
     tasks = list(result.survivors) + [c.task for c in result.candidates]
     by_gen: dict[Generation, list[Task]] = {gen: [] for gen, _, _ in _GEN_ORDER}
     for t in tasks:
@@ -285,7 +288,7 @@ def heap_view(result: GCResult, roots: set[int]) -> list[HeapSection]:
     for gen, en, cn in _GEN_ORDER:
         items = sorted(by_gen.get(gen, []), key=lambda t: t.id or 0)
         rows = [
-            HeapRow(task=t, kind=_row_kind(t, roots, t.id in cand_of), candidate=cand_of.get(t.id))
+            HeapRow(task=t, kind=RowKind.SNOOZED if t.id in snoozed_ids else _row_kind(t, roots, t.id in cand_of), candidate=cand_of.get(t.id))
             for t in items
         ]
         sections.append(HeapSection(gen=gen, name_en=en, name_cn=cn, rows=rows))
@@ -367,6 +370,8 @@ def _heap_row_text(row: HeapRow, *, lang: str | None = None) -> str:
     """
     marker = _ROW_MARKER[row.kind]
     annot = f"  ({candidate_note(row.candidate, lang=lang)})" if row.candidate is not None else ""
+    if row.kind is RowKind.SNOOZED and row.task.snoozed_until is not None:
+        annot = "  (" + _t("snooze.until", lang=lang, time=row.task.snoozed_until.astimezone().isoformat(timespec="minutes")) + ")"
     return f"  │   {marker} #{row.task.id} {row.task.title}{annot}"
 
 
@@ -466,7 +471,7 @@ def format_doctor(store: Store, result: GCResult, *, now: datetime | None = None
     roots = store.root_ids()
     findings: list[tuple[int, Task, list[str], list[str]]] = []
     for task in store.list_tasks(record_view=False):
-        if not task.state.is_active or task.in_inbox or task.id is None:
+        if not task.state.is_active or task.in_inbox or task.is_snoozed(now) or task.id is None:
             continue
         views = store.view_count(task.id)
         progress = store.refcount(task.id)

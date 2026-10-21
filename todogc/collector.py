@@ -9,9 +9,10 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from functools import cache
 from typing import TYPE_CHECKING
 
-from todogc.heap import ReferenceStrength, Task, TouchKind
+from todogc.heap import SNOOZE_GRACE_DAYS, ReferenceStrength, Task, TouchKind
 from todogc.i18n import DEFAULT_LOCALE
 from todogc.i18n import t as _t
 
@@ -76,6 +77,7 @@ class TaskMetrics:
     consecutive_skips: int | None = None
     days_since_progress: float | None = None
     days_since_restore: float | None = None
+    days_since_wake: float | None = None
 
 
 class Reason(str, Enum):
@@ -133,6 +135,7 @@ class GCResult:
     candidates: list[Candidate] = field(default_factory=list)
     cycles: list[Cycle] = field(default_factory=list)
     inbox: list[Task] = field(default_factory=list)
+    snoozed: list[Task] = field(default_factory=list)  # subset of survivors, not extra capacity
 
     @property
     def released_pct(self) -> float:
@@ -169,6 +172,7 @@ class Collector:
         roots: set[int],
         edges: dict[int, set[int]],
         metrics_of: Callable[[int], TaskMetrics],
+        *, now: datetime | None = None,
     ) -> GCResult:
         """Run one mark-and-sweep pass over the given task reference graph.
 
@@ -188,18 +192,20 @@ class Collector:
         Returns:
             GCResult: survivors, candidates, and detected reference cycles.
         """
+        now = now or datetime.now(timezone.utc)
         pending = [task for task in tasks.values() if task.state.is_active and task.in_inbox]
         tasks = {tid: task for tid, task in tasks.items() if task.state.is_active and not task.in_inbox}
         all_ids = set(tasks)
+        sleeping = {tid for tid, task in tasks.items() if task.is_snoozed(now)}
         reachable = self._mark(roots, edges, all_ids)
         unreachable = all_ids - reachable
-        cycles = self._find_cycles(unreachable, edges)
+        cycles = self._find_cycles(unreachable - sleeping, edges)
         cycle_of = {tid: c.id for c in cycles for tid in c.task_ids}
 
-        result = GCResult(cycles=cycles, inbox=pending)
+        result = GCResult(cycles=cycles, inbox=pending, snoozed=[tasks[tid] for tid in sorted(sleeping)])
         for tid in sorted(all_ids):
             task = tasks[tid]
-            if tid in roots or task.is_meta:
+            if tid in sleeping or tid in roots or task.is_meta:
                 result.survivors.append(task)
             elif tid in unreachable:
                 if tid in cycle_of:
@@ -268,7 +274,9 @@ class Collector:
         for a, b in extra_edges or ():
             edges[a].add(b)
 
+        @cache
         def metrics_of(tid: int) -> TaskMetrics:
+            task = tasks[tid]
             touches = store.touches(tid)
             effective_kinds = {
                 TouchKind.CREATE, TouchKind.PROGRESS, TouchKind.EDIT,
@@ -288,6 +296,10 @@ class Collector:
                 default=None,
             )
             restore_days = None if last_restore is None else (now - last_restore).total_seconds() / 86400.0
+            wake_times = [touch.ts for touch in touches if touch.kind is TouchKind.UNSNOOZE and touch.ts <= now]
+            if task.snoozed_until is not None and task.snoozed_until <= now:
+                wake_times.append(task.snoozed_until)
+            last_wake = max(wake_times, default=None)
             return TaskMetrics(
                 refcount_30d=store.refcount(tid, within_days=self.policy.effective_recent_days, now=now),
                 skip_count=store.skip_count(tid),
@@ -295,6 +307,7 @@ class Collector:
                 consecutive_skips=store.consecutive_skip_count(tid),
                 days_since_progress=progress_days,
                 days_since_restore=restore_days,
+                days_since_wake=None if last_wake is None else (now - last_wake).total_seconds() / 86400,
             )
 
         # An orphan that was just revived/restored acts as a temporary GC root during the
@@ -303,6 +316,9 @@ class Collector:
         # unreachable candidate.
         root_set = set(root_ids)
         for tid in tasks:
+            wake_days = metrics_of(tid).days_since_wake
+            if wake_days is not None and 0 <= wake_days < SNOOZE_GRACE_DAYS:
+                root_set.add(tid)
             last_restore = max(
                 (
                     tc.ts
@@ -316,7 +332,7 @@ class Collector:
                 if age_days < self.policy.restore_grace_days:
                     root_set.add(tid)
 
-        return self.collect(tasks, root_set, dict(edges), metrics_of)
+        return self.collect(tasks, root_set, dict(edges), metrics_of, now=now)
 
     # ---- internal: mark / cycle / liveness ----
 

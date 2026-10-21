@@ -48,7 +48,7 @@ class AppConfig:
 
     # [watch]: cadence of the scheduled checkup (seconds/days), matching the design's
     # "event-driven + heartbeat fallback + debounce" model.
-    watch_poll_seconds: int = 1800  # poll every 30 minutes
+    watch_poll_seconds: int = 60  # poll every minute
     watch_digest_seconds: int = 86400  # digest every 1 day
     watch_remind_days: int = 7
     watch_heap_threshold_pct: int = 80
@@ -189,7 +189,7 @@ def load_config(path: str | Path | None = None, *, environ: dict[str, str] | Non
         ntfy_topic=ntfy_topic,
         ntfy_token=ntfy_token,
         watch_poll_seconds=_positive(
-            env.get("TODOGC_WATCH_POLL_SECONDS", watch.get("poll_seconds", 1800)), "watch.poll_seconds"
+            env.get("TODOGC_WATCH_POLL_SECONDS", watch.get("poll_seconds", 60)), "watch.poll_seconds"
         ),
         watch_digest_seconds=_positive(
             env.get("TODOGC_WATCH_DIGEST_SECONDS", watch.get("digest_seconds", 86400)), "watch.digest_seconds"
