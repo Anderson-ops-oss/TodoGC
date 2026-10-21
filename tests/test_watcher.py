@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -36,7 +37,7 @@ class _FakeChannel:
 
 def _watcher(config: AppConfig) -> Watcher:
     """Construct a Watcher; db_path is never actually used (_run_once/_digest_due both take the passed-in store directly)."""
-    return Watcher("unused.db", config)
+    return Watcher("unused.db", replace(config, watch_weekly_review_enabled=False))
 
 
 # ============ run_tick: debounce / reminder period / recovery / heap alarm ============

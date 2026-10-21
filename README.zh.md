@@ -165,6 +165,10 @@ ntfy_topic = "你的-topic"        # 建议自建一个不容易被猜到的 top
 
 [watch]
 poll_seconds = 60                # 默认每分钟检查一次
+weekly_review_enabled = true
+weekly_review_day = "friday"
+weekly_review_time = "17:00"
+weekly_review_timezone = "local" # 或 Asia/Tokyo 等 IANA 时区
 digest_seconds = 86400           # 没有新事件也定期报个平安
 remind_days = 7                  # 候选状态没变时，隔多少天再提醒一次
 heap_threshold_pct = 80          # 堆占用告警阈值(%)
@@ -173,6 +177,8 @@ heap_threshold_pct = 80          # 堆占用告警阈值(%)
 推送是**事件驱动**的，不是心跳污染——参考真实 JVM 只在实际发生一次 GC 时才打日志，
 `todogc watch` 只在下列"跃迁"发生时才推(候选数量不变、状态没变一律静默)：
 
+- 每周回顾到期，默认每周五 17:00，使用配置的时区。
+- Snooze 到期后提醒恢复任务。
 - 任务从存活跃迁为候选(新僵尸 / 新孤儿 / 新循环引用)。
 - 候选状态本身发生变化(比如从 stale 变成陷入循环引用)。
 - 同一候选状态持续太久(超过 `remind_days` 没处理)，复议期到，再提醒一次。
@@ -184,6 +190,18 @@ heap_threshold_pct = 80          # 堆占用告警阈值(%)
 `todogc watch` 起一个单实例建议性锁——如果你已经在跑 `todogc web`(且配了
 `notify.ntfy_enabled`)，它会在 web 服务进程里自动带一条同款后台线程，此时再手动开
 `todogc watch` 会检测到锁被占用、自动放弃，不会对同一份跃迁重复推送两遍。
+
+`watch` 前台运行会占住当前 shell。放到后台并重定向输出后，同一个 terminal 可以继续添加任务：
+
+```bash
+nohup todogc watch > todogc-watch.log 2>&1 < /dev/null &
+todogc add "Plan next week" --root
+jobs -l
+```
+
+两个命令使用同一数据库和配置；切换目录时可使用绝对路径。停止时用 `kill` 加上
+`jobs -l` 显示的 watcher PID。`nohup` 在关闭 terminal 后仍可运行，电脑需保持唤醒；
+跨登录或重启常驻可使用系统服务管理器。
 
 ## 语言
 
@@ -279,6 +297,16 @@ todogc review --snapshot 1 --export saved-week.json
 快照保存在当前数据库中，固定统计、名称、时间边界、当时的任务量和所选亮点。
 新完成/放弃事件保存当时的名称、目标身份和收件箱位置；缺少历史标签的旧事件会使用当前
 元数据并在回顾中注明。保存快照后不再随任务修改而变化。
+
+配置 ntfy 后，watch 默认在**每周五 17:00** 自动生成快照并发送数字摘要：完成任务、
+完成目标、重开、想法整理、回收和放弃数量，以及快照编号。统计该唤醒时间所在周，
+仅包含预定 17:00 之前的事件，周五晚些时候和周末活动不会补入。任务量记录于实际生成时刻。
+标题与分享图可在网页或 CLI 打开快照后选择导出。
+
+启动时（包括首次启动）会补发最近一期已到期且未成功发送的回顾；离线多周也只补最近一期。
+失败后下次检查重试同一份快照，成功状态跨重启保留。`weekly_review_enabled = false` 可关闭，
+星期、时间、时区均可配置；环境变量统一使用 `TODOGC_WATCH_WEEKLY_REVIEW_` 前缀，
+后缀分别为 `ENABLED`、`DAY`、`TIME`、`TIMEZONE`。CLI 与网页内置 watcher 使用相同调度和数据库状态。
 
 SVG 无须额外依赖，PNG 使用 Pillow 与本地字体（缺少时使用 Pillow 内置字体），无需浏览器、
 API key 或外部服务；`[web]` 已包含 PNG 支持。两种图片均为 1080 × 1350，使用同一排版与真实统计。
@@ -410,8 +438,8 @@ pytest
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # 产出 dist/todogc-0.9.0-py3-none-any.whl 与 .tar.gz
-pip install dist/todogc-0.9.0-py3-none-any.whl   # 到哪都能装
+python -m build          # 产出 dist/todogc-0.10.0-py3-none-any.whl 与 .tar.gz
+pip install dist/todogc-0.10.0-py3-none-any.whl   # 到哪都能装
 ```
 
 `dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。

@@ -194,7 +194,7 @@ def test_wake_notifications_are_durable_deduped_and_retry_failures(store, now):
     until = now + timedelta(minutes=1)
     for task in (one, two):
         store.snooze_task(task.id, until, ts=now)
-    cfg = AppConfig(ntfy_enabled=True, ntfy_topic='test', heap_max=1000)
+    cfg = AppConfig(ntfy_enabled=True, ntfy_topic='test', heap_max=1000, watch_weekly_review_enabled=False)
     store.watch_meta_set('last_digest_at', now.isoformat())
     calls = []
     class Channel:

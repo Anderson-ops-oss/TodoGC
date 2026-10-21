@@ -1175,13 +1175,24 @@ class Store:
         ).fetchall()
         return {int(row[0]) for row in rows}
 
-    def save_review(self, *, week_start: str, generated_at: datetime, payload: str) -> int:
+    def save_review(self, *, week_start: str, generated_at: datetime, payload: str,
+                    schedule_key: str | None = None) -> int:
         with self._conn:
+            if schedule_key is not None:
+                # This insert acquires SQLite's write lock before checking the key.
+                # The empty reservation and snapshot commit atomically, including on crash.
+                self._conn.execute("INSERT OR IGNORE INTO watch_meta(key, value) VALUES (?, '')", (schedule_key,))
+                existing = self.watch_meta_get(schedule_key)
+                if existing:
+                    return int(existing)
             cur = self._conn.execute(
                 "INSERT INTO review_snapshot(week_start, generated_at, payload) VALUES (?, ?, ?)",
                 (week_start, self._to_iso(generated_at), payload),
             )
-        return self._lastrowid(cur)
+            snapshot_id = self._lastrowid(cur)
+            if schedule_key is not None:
+                self._conn.execute("UPDATE watch_meta SET value = ? WHERE key = ?", (str(snapshot_id), schedule_key))
+        return snapshot_id
 
     def saved_reviews(self) -> list[ReviewSnapshot]:
         rows = self._conn.execute("SELECT * FROM review_snapshot ORDER BY id DESC").fetchall()

@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 MESSAGES: dict[str, str] = {
+    "config.error.weekly_day": "watch.weekly_review_day 必须是 friday 等英文星期名称。",
+    "config.error.weekly_time": "watch.weekly_review_time 必须使用 17:00 等 24 小时制 HH:MM。",
+    "config.error.weekly_timezone": "watch.weekly_review_timezone 必须是 local 或 Asia/Tokyo 等有效 IANA 时区。",
+    "review.error.cutoff": "统计截止时间必须位于所选周内，且不能晚于当前时间。",
+    "watcher.weekly.title": "TodoGC · 每周回顾",
+    "watcher.weekly.completed": "完成任务：{tasks} · 完成目标：{goals} · 重新打开：{reopened}",
+    "watcher.weekly.snapshot": "已保存回顾 #{id} · 可在网页 Weekly review 中查看，或运行：todogc review --snapshot {id}",
     "review.web.choose_date": "请选择一个日期以回顾所在周。",
     "review.title": "每周回顾",
     "review.error.week": "请选择 this、last 或 2026-10-19 等日期，并使用有效的 IANA 时区或 local。",

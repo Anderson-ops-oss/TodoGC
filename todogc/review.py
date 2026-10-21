@@ -118,9 +118,14 @@ class WeeklyReview:
 
 
 def build_review(store: Store, week: str = "this", *, timezone_name: str = "local",
-                 now: datetime | None = None) -> WeeklyReview:
+                 now: datetime | None = None, through: datetime | None = None) -> WeeklyReview:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     window = week_window(week, timezone_name=timezone_name, now=now)
+    if through is not None:
+        through = through.astimezone(timezone.utc)
+        if not window.start <= through <= window.cutoff:
+            raise ValueError(_t("review.error.cutoff"))
+        window = replace(window, cutoff=through)
     events = store.review_events(window.start, window.cutoff)
     done: dict[int, Completion] = {}
     daily = [0] * 7

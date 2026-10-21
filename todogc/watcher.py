@@ -13,13 +13,15 @@ import os
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from todogc.collector import Candidate, Collector, GCPolicy, Reason
 from todogc.config import AppConfig
 from todogc.i18n import n_, t
 from todogc.heap import Task
 from todogc.notify import NotifyError, NtfyChannel
-from todogc.scheduling import local_time
+from todogc.review import WeeklyReview, build_review
+from todogc.scheduling import latest_weekly_due, local_time
 from todogc.store import Store
 
 logger = logging.getLogger(__name__)
@@ -194,6 +196,18 @@ def _snooze_message(tasks: list[Task], *, lang: str) -> tuple[str, str]:
     return title, body
 
 
+def _weekly_review_message(review: WeeklyReview, snapshot_id: int, *, lang: str) -> tuple[str, str]:
+    body = "\n".join([
+        f"{review.week_start} — {review.week_end}",
+        t("review.through", lang=lang, time=review.through_local),
+        t("watcher.weekly.completed", lang=lang, tasks=review.tasks_completed, goals=review.goals_completed, reopened=review.reopened),
+        t("review.ideas", lang=lang, captured=review.captured, organized=review.organized),
+        t("review.released", lang=lang, reclaimed=review.reclaimed, discarded=review.discarded),
+        t("watcher.weekly.snapshot", lang=lang, id=snapshot_id),
+    ])
+    return t("watcher.weekly.title", lang=lang), body
+
+
 def _event_message(result: TickResult, *, lang: str) -> tuple[str, str]:
     """Roll this round's triggered events up into a single push (multiple transitions merged into one, not spammed one at a time)."""
     lines = []
@@ -328,8 +342,35 @@ class Watcher:
         if result.heap_alarm:
             self._safe_send(*_heap_alarm_message(result, lang=lang), priority=5, tags=["rotating_light"])
         if self._digest_due(store, now):
-            self._safe_send(*_digest_message(result, lang=lang), priority=2, tags=["recycle"])
-            store.watch_meta_set("last_digest_at", now.isoformat())
+            if self._safe_send(*_digest_message(result, lang=lang), priority=2, tags=["recycle"]):
+                store.watch_meta_set("last_digest_at", now.isoformat())
+        self._run_weekly_review(store, now)
+
+    def _run_weekly_review(self, store: Store, now: datetime) -> None:
+        cfg = self._config
+        if not cfg.watch_weekly_review_enabled:
+            return
+        due = latest_weekly_due(now, weekday=cfg.watch_weekly_review_day, clock=cfg.watch_weekly_review_time,
+                                timezone_name=cfg.watch_weekly_review_timezone)
+        key = (f"weekly_review:{cfg.watch_weekly_review_timezone}:{cfg.watch_weekly_review_day}:"
+               f"{cfg.watch_weekly_review_time}:{due.isoformat()}")
+        if store.watch_meta_get(key + ":sent") is not None:
+            return
+        snapshot_raw = store.watch_meta_get(key)
+        if snapshot_raw is None:
+            # Resolve the report week in the schedule's timezone, including catch-up next week.
+            zone = None if cfg.watch_weekly_review_timezone == "local" else ZoneInfo(cfg.watch_weekly_review_timezone)
+            week = due.astimezone(zone).date().isoformat()
+            review = build_review(store, week, timezone_name=cfg.watch_weekly_review_timezone, now=now, through=due)
+            snapshot_id = store.save_review(week_start=review.week_start, generated_at=now,
+                                            payload=review.to_json(), schedule_key=key)
+        else:
+            snapshot_id = int(snapshot_raw)
+        snapshot = store.saved_review(snapshot_id)
+        assert snapshot is not None
+        review = WeeklyReview.from_json(snapshot.payload)
+        if self._safe_send(*_weekly_review_message(review, snapshot_id, lang=cfg.lang), priority=3, tags=["calendar"]):
+            store.watch_meta_set(key + ":sent", now.isoformat())
 
     def _digest_due(self, store: Store, now: datetime) -> bool:
         """Whether it's been longer than config.watch_digest_seconds since the last heartbeat digest."""

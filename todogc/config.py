@@ -7,9 +7,11 @@ the core dependency-free either way.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES
 from todogc.i18n import t as _t
@@ -53,6 +55,10 @@ class AppConfig:
     watch_remind_days: int = 7
     watch_heap_threshold_pct: int = 80
     watch_lock_stale_seconds: int = 300
+    watch_weekly_review_enabled: bool = True
+    watch_weekly_review_day: int = 4  # Monday = 0, Friday = 4
+    watch_weekly_review_time: str = "17:00"
+    watch_weekly_review_timezone: str = "local"
 
 
 def _scalar(raw: str) -> object:
@@ -124,6 +130,31 @@ def _percent(value: Any, name: str) -> int:
     if number > 100:
         raise ConfigError(_t("config.error.must_be_percent", name=name))
     return number
+
+
+def _weekday(value: Any) -> int:
+    days = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    if not isinstance(value, str) or value.strip().lower() not in days:
+        raise ConfigError(_t("config.error.weekly_day"))
+    return days.index(value.strip().lower())
+
+
+def _clock_time(value: Any) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", value.strip()):
+        raise ConfigError(_t("config.error.weekly_time"))
+    return value.strip()
+
+
+def _review_timezone(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ConfigError(_t("config.error.weekly_timezone"))
+    name = value.strip()
+    try:
+        if name != "local":
+            ZoneInfo(name)
+    except (ValueError, ZoneInfoNotFoundError) as exc:
+        raise ConfigError(_t("config.error.weekly_timezone")) from exc
+    return name
 
 
 def load_config(path: str | Path | None = None, *, environ: dict[str, str] | None = None) -> AppConfig:
@@ -204,5 +235,18 @@ def load_config(path: str | Path | None = None, *, environ: dict[str, str] | Non
         watch_lock_stale_seconds=_positive(
             env.get("TODOGC_WATCH_LOCK_STALE_SECONDS", watch.get("lock_stale_seconds", 300)),
             "watch.lock_stale_seconds",
+        ),
+        watch_weekly_review_enabled=_flag(
+            env.get("TODOGC_WATCH_WEEKLY_REVIEW_ENABLED", watch.get("weekly_review_enabled", True)),
+            "watch.weekly_review_enabled",
+        ),
+        watch_weekly_review_day=_weekday(
+            env.get("TODOGC_WATCH_WEEKLY_REVIEW_DAY", watch.get("weekly_review_day", "friday")),
+        ),
+        watch_weekly_review_time=_clock_time(
+            env.get("TODOGC_WATCH_WEEKLY_REVIEW_TIME", watch.get("weekly_review_time", "17:00")),
+        ),
+        watch_weekly_review_timezone=_review_timezone(
+            env.get("TODOGC_WATCH_WEEKLY_REVIEW_TIMEZONE", watch.get("weekly_review_timezone", "local")),
         ),
     )

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from todogc.i18n import t as _t
 
@@ -34,3 +35,17 @@ def parse_snooze_time(*, duration: str | None = None, until: str | None = None,
 
 def local_time(value: datetime) -> str:
     return value.astimezone().isoformat(timespec="minutes")
+
+
+def latest_weekly_due(now: datetime, *, weekday: int = 4, clock: str = "17:00",
+                      timezone_name: str = "local") -> datetime:
+    """Return the most recent weekly wall-clock occurrence, including offline catch-up."""
+    zone = None if timezone_name == "local" else ZoneInfo(timezone_name)
+    local = now.astimezone(zone)
+    day = local.date() - timedelta(days=(local.weekday() - weekday) % 7)
+    when = time.fromisoformat(clock)
+    due = datetime.combine(day, when, tzinfo=zone).astimezone(timezone.utc)
+    if due > now:
+        # Rebuild local time for the earlier date; subtracting 168 UTC hours breaks DST.
+        due = datetime.combine(day - timedelta(days=7), when, tzinfo=zone).astimezone(timezone.utc)
+    return due

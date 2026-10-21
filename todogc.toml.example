@@ -22,3 +22,8 @@ digest_seconds = 86400     # heartbeat digest interval (seconds): reports in per
 remind_days = 7            # when a candidate's status hasn't changed, how many days before reminding again (don't remind once and go silent)
 heap_threshold_pct = 80    # heap-usage alert threshold (%), only alerts once when crossing this line (edge-triggered, not spammed continuously)
 lock_stale_seconds = 300   # single-instance lock heartbeat expiry: how long before the previous watcher is judged dead and can be taken over
+
+weekly_review_enabled = true
+weekly_review_day = "friday"       # monday .. sunday
+weekly_review_time = "17:00"        # local wall-clock time, HH:MM (24-hour)
+weekly_review_timezone = "local"   # or an IANA timezone, e.g. Asia/Tokyo

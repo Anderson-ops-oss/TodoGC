@@ -197,12 +197,17 @@ poll_seconds = 60                # check every minute (default)
 digest_seconds = 86400           # send a heartbeat digest periodically even with no new events
 remind_days = 7                  # re-remind after this many days if a candidate's state hasn't changed
 heap_threshold_pct = 80          # heap usage alert threshold (%)
+weekly_review_enabled = true
+weekly_review_day = "friday"
+weekly_review_time = "17:00"
+weekly_review_timezone = "local" # or Asia/Tokyo, Europe/London, etc.
 ```
 
 The push design is **event-driven**, not heartbeat noise — modeled on how a real JVM
 only logs when a collection actually happens. `todogc watch` only pushes on the
 following "transitions" (unchanged candidate count/state stays silent):
 
+- A weekly review becomes due: Friday at 17:00 by default, in the configured timezone.
 - A snoozed task reaches its scheduled return time (one reminder per schedule; failed delivery is retried).
 - A task transitions from alive to a candidate (new zombie / new orphan / new cycle).
 - A candidate's state itself changes (e.g. from stale to trapped in a cycle).
@@ -220,6 +225,20 @@ don't have to wonder.
 background thread inside the web server process; manually starting `todogc watch`
 on top of that will detect the lock is held and back off, so the same transition
 never gets pushed twice.
+
+`watch` runs in the foreground and occupies the current shell. To keep adding tasks
+in the **same terminal**, start it in the background with output redirected:
+
+```bash
+nohup todogc watch > todogc-watch.log 2>&1 < /dev/null &
+todogc add "Plan next week" --root
+jobs -l
+```
+
+Use the same database/config for both commands; use absolute paths if changing
+directories. Stop the watcher with `kill` followed by its PID from `jobs -l`.
+`nohup` keeps it running when the terminal closes, while the computer remains awake;
+a service manager can keep it running across logins or reboots.
 
 ## Language
 
@@ -350,6 +369,22 @@ boundaries, the recorded current task load, and selected highlights. New complet
 and discard events preserve their task name, goal role and Inbox location at the time.
 Older events lacking those labels fall back to current task metadata and are identified
 in the review; saving a snapshot freezes the resolved values.
+
+With ntfy configured, `watch` also sends a **Friday 17:00** review automatically.
+It summarizes the calendar week containing the scheduled time, counting events
+strictly before that cutoff; later Friday and weekend activity stays out of that snapshot.
+The message includes completion, reopened, idea and collection counts plus a saved
+snapshot ID. Titles and images are selected when you open/export the saved review.
+The current task load is recorded at the actual generation time, including delayed catch-up.
+
+On startup (including the first start), the watcher sends the most recent due review
+if it has not been delivered. Missing several weeks sends only the latest due review.
+A failed delivery retries the **same saved snapshot** on the next check; successful
+responses are remembered across restarts. `weekly_review_enabled = false` disables
+this reminder. Day, time and timezone can be overridden through the matching
+`TODOGC_WATCH_WEEKLY_REVIEW_ENABLED`, `_DAY`, `_TIME` and `_TIMEZONE` environment variables
+(with the full `TODOGC_WATCH_WEEKLY_REVIEW_` prefix for each). The CLI watcher and
+Web UI's built-in watcher share this schedule and database state.
 
 SVG export uses only the standard library. PNG uses Pillow and locally available fonts,
 with an embedded Pillow font as fallback; it needs no browser, API key or external service.
@@ -543,8 +578,8 @@ Zero core dependencies — packs into a standard wheel/sdist for direct distribu
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # produces dist/todogc-0.9.0-py3-none-any.whl and .tar.gz
-pip install dist/todogc-0.9.0-py3-none-any.whl   # install it anywhere
+python -m build          # produces dist/todogc-0.10.0-py3-none-any.whl and .tar.gz
+pip install dist/todogc-0.10.0-py3-none-any.whl   # install it anywhere
 ```
 
 `dist/`, `build/`, `*.egg-info/` are all in `.gitignore` — build artifacts aren't

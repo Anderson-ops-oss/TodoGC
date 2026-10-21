@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 MESSAGES: dict[str, str] = {
+    "config.error.weekly_day": "watch.weekly_review_day must be a weekday name, such as friday.",
+    "config.error.weekly_time": "watch.weekly_review_time must use 24-hour HH:MM, such as 17:00.",
+    "config.error.weekly_timezone": "watch.weekly_review_timezone must be local or a valid IANA timezone, such as Asia/Tokyo.",
+    "review.error.cutoff": "The review cutoff must be within the selected week and no later than now.",
+    "watcher.weekly.title": "TodoGC · Weekly review",
+    "watcher.weekly.completed": "Tasks completed: {tasks} · Goals closed: {goals} · Reopened: {reopened}",
+    "watcher.weekly.snapshot": "Saved review #{id} · Open Weekly review in the Web UI, or run: todogc review --snapshot {id}",
     "review.web.choose_date": "Choose a date to review its week.",
     "review.title": "Weekly review",
     "review.error.week": "Choose this, last, or a date such as 2026-10-19, and a valid IANA timezone (or local).",
