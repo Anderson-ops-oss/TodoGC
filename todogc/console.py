@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Literal
 
 from todogc.heap import Generation, State, Task
+from todogc.i18n import t as _t
 
 if TYPE_CHECKING:
     from rich.console import Console  # pyright: ignore[reportMissingImports]
@@ -49,6 +50,7 @@ _STATE_STYLE = {
     State.LIVE: "green",
     State.CANDIDATE: "yellow",
     State.COLLECTED: "dim",
+    State.DONE: "bold cyan",
 }
 
 
@@ -75,7 +77,7 @@ if _HAVE_RICH:
             r"│\s+(?P<heap_root>★)",
             r"│\s+(?P<heap_meta>⊛)",
             r"(?P<heap_bar>\[[█░]+\])",
-            r"(?P<heap_region>[┌├] [A-Za-z]+ ·[^\n]*)",
+            r"(?P<heap_region>[┌├] [^\n]+ \(\d+\))",
         ]
 
     _THEME = Theme(
@@ -147,7 +149,7 @@ def render_ls(tasks: Iterable[Task], root_ids: set[int]) -> bool:
     c = Console()
     rows = list(tasks)
     if not rows:
-        c.print("[dim](空堆)[/dim]")
+        c.print(_t("cli.ls.empty_heap"), markup=False, style="dim")
         return True
     table = Table(show_header=True, header_style="bold")
     columns: tuple[tuple[str, Literal["left", "right"]], ...] = (

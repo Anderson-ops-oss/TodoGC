@@ -3,6 +3,28 @@
 from __future__ import annotations
 
 MESSAGES: dict[str, str] = {
+    "store.error.task_already_done": "Task #{id} is completed; reopen it first.",
+    "store.error.task_not_done": "Task #{id} is not completed; only completed tasks can be reopened.",
+    "store.error.unfinished_subtasks": "Task #{id} has unfinished subtasks: {tasks}. Complete or reassign them first, or explicitly include them with --with-subtasks (Include unfinished subtasks in the Web UI).",
+    "store.error.reopen_parent_inactive": "Parent #{id} is inactive. Reopen it first, or choose an active parent with --root-id.",
+    "store.error.reopen_heap_full": "Active heap is full (cap {max}). Complete or collect a task first, increase the cap, or use reopen --force.",
+    "cli.done.success": "Completed {ids}. Removed from the active heap; history preserved.",
+    "cli.reopen.success": "Reopened #{id}. History preserved; a grace period applies.",
+    "cli.completed.empty": "No completed tasks yet.",
+    "cli.help.cmd_done": "mark a task as completed",
+    "cli.help.done_subtasks": "also complete every unfinished descendant (explicit opt-in)",
+    "cli.help.cmd_reopen": "return a completed task to the active heap",
+    "cli.help.cmd_completed": "list completed tasks and completion times",
+    "webapp.sidebar.language_label": "Language",
+    "webapp.language.en": "English",
+    "webapp.language.zh": "Chinese",
+    "webapp.done.button": "Mark as done",
+    "webapp.done.unfinished": "Unfinished subtasks — complete or reassign these first, or explicitly include them below:",
+    "webapp.done.with_subtasks": "Include unfinished subtasks when marking done",
+    "webapp.completed.title": "Completed",
+    "webapp.completed.timestamp": "Completed at: {time}",
+    "webapp.completed.parent": "Parent / goal ID on reopen (0 = keep existing)",
+    "webapp.completed.reopen": "Reopen",
     # collector.py
     "collector.error.invalid_mode": "GC mode must be gentle / normal / aggressive",
     "collector.error.invalid_threshold": "GCPolicy thresholds must be greater than 0",

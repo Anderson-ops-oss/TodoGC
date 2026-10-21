@@ -143,7 +143,7 @@ max = 50
 `soft` 使用常规活跃度规则；`weak` 必须在时间窗内有真推进。推进、编辑、复活和恢复会
 清零“连续推迟”，但历史累计推迟仍保留用于审计；恢复任务默认享有 7 天宽限期。
 
-数据库会自动从旧版迁移到 schema v3；迁移文件库前先生成同目录 `.bak`。真实执行的 GC
+数据库会自动从旧版迁移到 schema v5；迁移文件库前先生成同目录 `.bak`。真实执行的 GC
 写入审计历史，`heap` 与 `gc --dry-run` 始终只读。
 
 ## v0.3：定时体检(ntfy 推送)
@@ -255,8 +255,8 @@ pytest
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # 产出 dist/todogc-0.4.0-py3-none-any.whl 与 .tar.gz
-pip install dist/todogc-0.4.0-py3-none-any.whl   # 到哪都能装
+python -m build          # 产出 dist/todogc-0.5.0-py3-none-any.whl 与 .tar.gz
+pip install dist/todogc-0.5.0-py3-none-any.whl   # 到哪都能装
 ```
 
 `dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。

@@ -17,7 +17,7 @@ A task that stays long-term "unreachable" from your real goals (never progressed
 repeatedly snoozed) gets flagged as garbage, triggering a ceremony that forces you
 to pick one: **revive** it, or admit you're never doing it.
 
-*([中文说明见 README.zh.md](README.zh.md))*
+*([Optional Chinese documentation](README.zh.md))*
 
 ---
 
@@ -52,6 +52,9 @@ without `streamlit` the CLI and tests are unaffected. Requires Python 3.10+.
 todogc add "Ship payment refactor this quarter" --root   # #1 declare an active goal (GC root)
 todogc add "Write reconciliation module" --root-id 1     # #2 hang it under target #1
 todogc progress 2 "core logic done"                      # real progress (+1 refcount)
+todogc done 2 "Shipped"                                 # mark successfully completed; free heap capacity
+todogc completed                                        # completed tasks with timestamps
+todogc reopen 2                                         # return a completed task to the active heap
 
 todogc add "Learn Rust"                                   # #3 ┐ a pair of zombies vouching for each other
 todogc add "Rewrite blog in Rust"                         # #4 ┘
@@ -78,45 +81,43 @@ todogc --lang zh gc                          # switch output language to Chinese
 ### What a `gc --dry-run` looks like
 
 ```
-[运行 0d00h][info][gc] GC(0) Pause Young (Allocation Failure)
-  活跃堆         : 6 -> 3 tasks (上限 50)
-  本轮回收       : 3 zombies   →  释放认知内存 50.0%
-  reference cycle: 1 处  「Learn Rust」 ⇄ 「Rewrite blog in Rust」
-  [Times: 焦虑=0.4h  自责=0.2h  实际推进=0.0h]
+[uptime 0d00h][info][gc] GC(0) Pause Young (Allocation Failure)
+  active heap    : 6 -> 3 tasks (cap 50)
+  reclaimed      : 3 zombies   →  cognitive memory freed 50.0%
+  reference cycle: 1 found  "Learn Rust" ⇄ "Rewrite blog in Rust"
+  [Times: anxiety=0.4h  self-blame=0.2h  actual progress=0.0h]
 
-━━ 回收候选清单 (3 项) ━━━━━━━━━━━━━━━━
-[reference cycle #0] 互相担保，谁都不连 root：
+━━ Reclaim candidates (3 items) ━━━━━━━━━━━━━━━━
+[reference cycle #0] mutually vouching for each other, none reaches a root:
    ⇄ #3 Learn Rust
    ⇄ #4 Rewrite blog in Rust
-[unreachable] 从任何活跃目标都不可达：
+[unreachable] unreachable from any active target:
    · #5 Orphan task
 ```
 
-> Note: the GC log/heap map/`doctor`/`stats` output above (`report.py`) is not yet
-> covered by the v0.4 i18n pass — its labels stay in Chinese regardless of `--lang`.
-> Task titles you type yourself (e.g. "Learn Rust" above) are of course whatever
-> language you typed them in. See [v0.4](#v04-bilingual-en--zh-i18n) below.
+English is the default for CLI output and the Web UI, including generation names.
+Chinese is an optional locale; user-authored task titles and notes retain their original language.
 
 ### What a `heap` (alias `jmap`) looks like
 
 ```
-━━ 堆内存快照 · jmap -heap ━━━━━━━━━━━━━━━━
-  -Xmx 占用: 5 / 50 obj  [██░░░░░░░░░░░░░░░░░░] 10.0%   (Metaspace 不计)
+━━ Heap Memory Snapshot · jmap -heap ━━━━━━━━━━━━━━━━
+  -Xmx usage: 5 / 50 obj  [██░░░░░░░░░░░░░░░░░░] 10.0%   (Metaspace excluded)
 
-  ┌ Eden · 新生代 (5)
+  ┌ Eden (5)
   │   ★ #1 Ship payment refactor this quarter
   │     #2 Write reconciliation module
   │   ☠ #3 Learn Rust  (cycle #0)
   │   ☠ #4 Rewrite blog in Rust  (cycle #0)
   │   ☠ #5 Orphan task  (unreachable)
-  ├ Survivor · 幸存区 (0)
-  │   (空)
-  ├ Old · 老年代 (0)
-  │   (空)
-  ├ Metaspace · 元空间 (1)
+  ├ Survivor (0)
+  │   (empty)
+  ├ Old (0)
+  │   (empty)
+  ├ Metaspace (1)
   │   ⊛ #6 Be more disciplined
   └──────────────
-  图例: ★ root · ☠ 回收候选(僵尸) · ⊛ 元任务
+  Legend: ★ root · ☠ reclaim candidate (zombie) · ⊛ meta-task
 ```
 
 With `rich` installed: zombie rows are highlighted red, `★` roots are gilded, the
@@ -142,7 +143,7 @@ Same core, same heap map, just moved from the terminal into the browser:
   one-click `restore`
 - **Task details** support edit/progress/snooze/link/dep and the event timeline; **Leak
   Inspector** and GC history share the same source as the CLI
-- A **Language / 语言** picker at the top of the sidebar — see [v0.4](#v04-bilingual-en--zh-i18n)
+- A **Language** picker at the top of the sidebar — see [v0.4](#v04-bilingual-en--zh-i18n)
 
 The Web UI is optional: without `streamlit` installed, `todogc web` just prints a friendly
 install hint and never affects other commands; the browser's auto-refresh doesn't count as
@@ -169,7 +170,7 @@ must have real progress within the time window. Progressing, editing, reviving, 
 restoring all reset "consecutive skips", but the historical skip total is kept for
 audit; a restored task gets a 7-day grace period by default.
 
-The database auto-migrates from older schemas to v4; a `.bak` is generated alongside
+The database auto-migrates from older schemas to v5; a `.bak` is generated alongside
 the file before migrating. A real GC run writes to the audit history; `heap` and
 `gc --dry-run` are always read-only.
 
@@ -236,17 +237,56 @@ shows the default language — reading the config file first would require resol
 actual command output, once it runs, correctly follows the config file.
 
 The Web UI (`todogc web`) doesn't read any of the above — it has its own **per-browser-session**
-language switcher (the `Language / 语言` dropdown at the top of the sidebar), seeded from
+language switcher (the `Language` dropdown at the top of the sidebar), seeded from
 `todogc.toml`'s `[i18n] lang`, but switching only affects the current session — it's never
 written back to the config file, and doesn't affect anyone else's page. The background
 `todogc watch` push language only follows `[i18n] lang` (or `TODOGC_LANG`) — deliberately
 decoupled from the Web UI's display language, so multiple people with the Web UI open at
 once can't change each other's push language.
 
-> Currently covers CLI output and `--help` text, the Web UI, ntfy push content, and
-> config/store-layer error messages. The GC log, heap map, and `doctor`/`stats` output
-> (`report.py`) still isn't part of this pass and stays in Chinese regardless of
-> `--lang` — that's un-migrated territory, PRs welcome.
+> English is the primary language, including reports, generation names, empty states,
+> and the language picker. Chinese is available as an optional extension. Some diagnostic
+> and stats labels remain in English when Chinese is selected.
+
+## v0.5: Complete and reopen tasks
+
+Completion means the work succeeded; collection means you decided to let it go.
+Both leave the active heap, but completed tasks appear in **Completed**, never the graveyard.
+
+```bash
+todogc done 2 "Published the documentation"
+todogc completed                  # IDs, titles and completion times
+todogc ls --state done            # completed tasks in the task-list format
+todogc show 2                     # includes the completion timestamp
+todogc history 2                  # retains progress, completion and reopen events
+todogc reopen 2                   # reopen this task only
+todogc reopen 2 --root-id 3        # optionally reassign to an active parent
+```
+
+`ls` defaults to active tasks. Completed tasks release heap capacity, are excluded from
+GC/doctor/watch checks, and cannot be progressed, edited or snoozed until reopened.
+Root and meta-tasks can also be completed. Completion does not promote generations
+or silently complete a parent when its last child finishes.
+
+If a goal or parent has unfinished descendants, `done` lists them and refuses to change
+anything. Complete them individually, reassign them with `link`, or explicitly finish
+the whole subtree:
+
+```bash
+todogc done 1 --with-subtasks
+```
+
+The Web UI provides **Mark as done** in the task manager, an unchecked **Include unfinished
+subtasks when marking done** option with a list of affected tasks, and a **Completed**
+section with completion times, history and **Reopen** buttons.
+
+Reopening retains root identity and history, resets consecutive skips and gives the
+configured restore grace period (7 days by default). It does not reopen descendants.
+If the old parent is completed or collected, reopen the parent first or choose another
+active parent. Reopening respects the heap cap; the CLI's `reopen --force` explicitly
+allows over-allocation. Completing and reopening never delete audit history.
+
+Existing databases migrate to schema v5 on first open, with a `.bak` created before migration.
 
 ## Aliveness Rule
 
@@ -300,8 +340,8 @@ Zero core dependencies — packs into a standard wheel/sdist for direct distribu
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # produces dist/todogc-0.4.0-py3-none-any.whl and .tar.gz
-pip install dist/todogc-0.4.0-py3-none-any.whl   # install it anywhere
+python -m build          # produces dist/todogc-0.5.0-py3-none-any.whl and .tar.gz
+pip install dist/todogc-0.5.0-py3-none-any.whl   # install it anywhere
 ```
 
 `dist/`, `build/`, `*.egg-info/` are all in `.gitignore` — build artifacts aren't
@@ -328,10 +368,13 @@ single-instance lock, Web UI auto-mounts a background watcher thread per config.
 **v0.4 done**: bilingual EN/ZH, English by default; `--lang`/env var/`todogc.toml`
 three-tier precedence; Web UI switches language independently per session; CLI output,
 `--help`, Web UI, ntfy push, and config/store-layer errors are all covered
-(`report.py`'s GC log/heap map is not yet included).
+(including the GC log and heap map).
+
+**v0.5 done**: task/goal completion, completed archive with timestamps, reopening,
+explicit subtree completion, schema v5 migration, and an English-only default interface.
 
 **Candidates for later (PRs welcome)**: GitHub Issues/PR sync, TODO/FIXME import,
-interactive reference graph, bringing `report.py`'s GC log/heap map text into i18n.
+interactive reference graph, finishing optional Chinese translations of diagnostic/stat labels.
 
 > Note: a task's "age" currently only increments **when revived during the collection
 > ceremony** (i.e. "how many times you've dodged it"), not automatically every GC round.

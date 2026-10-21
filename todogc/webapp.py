@@ -178,7 +178,7 @@ def _render_heap(result: GCResult, roots: set[int], heap_max: int, *, lang: str)
     cols = st.columns(2)
     for i, sec in enumerate(report.heap_view(result, roots)):
         with cols[i % 2].container(border=True):
-            st.markdown(f"**{sec.name_en}** · {sec.name_cn}　({len(sec.rows)})")
+            st.markdown(f"**{sec.display_name(lang)}** ({len(sec.rows)})")
             if sec.rows:
                 st.markdown("<br>".join(_row_markup(r, lang=lang) for r in sec.rows), unsafe_allow_html=True)
             else:
@@ -245,7 +245,7 @@ def _render_ceremony(
         choices[tid] = c1.radio(
             _t("webapp.ceremony.decide_label", lang=lang),
             list(label_map), key=f"decide_{tid}", horizontal=True, label_visibility="collapsed"
-        )
+        ) or next(iter(label_map))
         eulogies[tid] = c2.text_input(
             _t("webapp.ceremony.eulogy_label", lang=lang), key=f"eulogy_{tid}", label_visibility="collapsed",
             placeholder=_t("webapp.ceremony.eulogy_placeholder", lang=lang),
@@ -328,7 +328,7 @@ def _render_add(store: Store, heap_max: int, now: datetime, *, lang: str) -> Non
     try:
         t = store.add_task(
             title.strip(), root_id=(int(root_id) or None), is_root=is_root, meta=meta,
-            ref_strength=ref_strength, ts=now,
+            ref_strength=ref_strength or ReferenceStrength.SOFT, ts=now,
         )
     except ValueError as exc:
         st.error(str(exc))
@@ -377,7 +377,7 @@ def _render_graveyard(store: Store, now: datetime, *, lang: str) -> None:
 
 def _render_task_manager(store: Store, now: datetime, *, lang: str) -> None:
     """Task details, edit, progress, snooze, linking, and the event timeline."""
-    tasks = [t for t in store.list_tasks(record_view=False) if t.state is not State.COLLECTED]
+    tasks = [t for t in store.list_tasks(record_view=False) if t.state.is_active]
     if not tasks:
         st.caption(_t("webapp.task_manager.empty", lang=lang))
         return
@@ -386,6 +386,8 @@ def _render_task_manager(store: Store, now: datetime, *, lang: str) -> None:
         _t("webapp.task_manager.select_label", lang=lang),
         list(by_id), format_func=lambda tid: f"#{tid} {by_id[tid].title}", key="task_manager_id"
     )
+    if selected_value is None:
+        return
     selected = int(selected_value)
     task = by_id[selected]
     task_id = task.persisted_id
@@ -410,6 +412,22 @@ def _render_task_manager(store: Store, now: datetime, *, lang: str) -> None:
     if b2.button(_t("webapp.task_manager.defer_button", lang=lang), key=f"defer_{task_id}"):
         store.defer(task_id, note, ts=now)
         st.rerun()
+
+    children = store.active_descendants(task_id)
+    with_subtasks = False
+    if children:
+        st.caption(_t("webapp.done.unfinished", lang=lang))
+        for child in children:
+            st.text(f"#{child.id} {child.title}")
+        with_subtasks = st.checkbox(
+            _t("webapp.done.with_subtasks", lang=lang), key=f"done_subtasks_{task_id}"
+        )
+    if st.button(_t("webapp.done.button", lang=lang), key=f"done_{task_id}"):
+        try:
+            store.complete_task(task_id, with_subtasks=with_subtasks, note=note, ts=now)
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
 
     parent = st.number_input(
         _t("webapp.task_manager.parent_label", lang=lang), min_value=0, value=int(task.root_id or 0), step=1,
@@ -449,6 +467,34 @@ def _render_task_manager(store: Store, now: datetime, *, lang: str) -> None:
             )
 
 
+def _render_completed(store: Store, heap_max: int, now: datetime, *, lang: str) -> None:
+    tasks = store.list_tasks(state=State.DONE, record_view=False)
+    if not tasks:
+        st.caption(_t("cli.completed.empty", lang=lang))
+        return
+    for task in tasks:
+        tid = task.persisted_id
+        with st.expander(f"#{tid} {task.title}"):
+            st.text(_t(
+                "webapp.completed.timestamp", lang=lang,
+                time=task.completed_at.isoformat() if task.completed_at else "-",
+            ))
+            touches = store.touches(tid)
+            st.caption(_t("webapp.task_manager.timeline_expander", lang=lang, count=len(touches)))
+            for touch in reversed(touches):
+                st.text(f"{touch.ts.isoformat()}  {touch.kind.value}" + (f" · {touch.note}" if touch.note else ""))
+            parent = st.number_input(
+                _t("webapp.completed.parent", lang=lang), min_value=0, value=int(task.root_id or 0),
+                step=1, key=f"reopen_parent_{tid}",
+            )
+            if st.button(_t("webapp.completed.reopen", lang=lang), key=f"reopen_{tid}"):
+                try:
+                    store.reopen_task(tid, root_id=int(parent) or None, heap_max=heap_max, ts=now)
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+
+
 def main() -> None:
     """Streamlit entry point: assembles the sidebar (add + -Xmx) and the main area (heap map / GC log / ceremony / graveyard).
 
@@ -477,9 +523,9 @@ def main() -> None:
         with st.sidebar:
             st.title("🗑️ TodoGC")
             lang = st.selectbox(
-                "Language / 语言", SUPPORTED_LOCALES,
-                format_func=lambda code: {"en": "English", "zh": "中文"}[code], key="lang",
-            )
+                _t("webapp.sidebar.language_label", lang=lang), SUPPORTED_LOCALES,
+                format_func=lambda code: _t(f"webapp.language.{code}", lang=lang), key="lang",
+            ) or cfg.lang
             st.caption(_t("webapp.sidebar.db_caption", lang=lang, db=_db_path()))
             if cfg.ntfy_enabled:
                 _start_watcher(_db_path(), cfg)
@@ -500,7 +546,7 @@ def main() -> None:
             mode = st.selectbox(
                 _t("webapp.sidebar.mode_label", lang=lang), ["gentle", "normal", "aggressive"],
                 index=["gentle", "normal", "aggressive"].index(cfg.gc_mode),
-            )
+            ) or cfg.gc_mode
             policy = GCPolicy(
                 mode=mode,
                 recent_days=cfg.recent_days,
@@ -538,6 +584,9 @@ def main() -> None:
 
         st.subheader(_t("webapp.main.graveyard_subheader", lang=lang))
         _render_graveyard(store, now, lang=lang)
+
+        st.subheader(_t("webapp.completed.title", lang=lang))
+        _render_completed(store, heap_max, now, lang=lang)
     finally:
         store.close()
 

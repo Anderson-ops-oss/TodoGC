@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from todogc.heap import ReferenceStrength, State, Task, TouchKind
+from todogc.heap import ReferenceStrength, Task, TouchKind
 from todogc.i18n import DEFAULT_LOCALE
 from todogc.i18n import t as _t
 
@@ -187,6 +187,7 @@ class Collector:
         Returns:
             GCResult: survivors, candidates, and detected reference cycles.
         """
+        tasks = {tid: task for tid, task in tasks.items() if task.state.is_active}
         all_ids = set(tasks)
         reachable = self._mark(roots, edges, all_ids)
         unreachable = all_ids - reachable
@@ -256,7 +257,7 @@ class Collector:
         tasks = {
             t.persisted_id: t
             for t in store.list_tasks(record_view=False)
-            if t.state is not State.COLLECTED
+            if t.state.is_active
         }
         edges: dict[int, set[int]] = defaultdict(set)
         for t in tasks.values():
@@ -270,6 +271,7 @@ class Collector:
             effective_kinds = {
                 TouchKind.CREATE, TouchKind.PROGRESS, TouchKind.EDIT,
                 TouchKind.LINK, TouchKind.REVIVE, TouchKind.RESTORE,
+                TouchKind.REOPEN,
             }
             last = max(
                 (tc.ts for tc in touches if tc.kind in effective_kinds),
@@ -279,7 +281,7 @@ class Collector:
             last_progress = max((tc.ts for tc in touches if tc.kind.is_progress), default=None)
             progress_days = None if last_progress is None else (now - last_progress).total_seconds() / 86400.0
             last_restore = max(
-                (tc.ts for tc in touches if tc.kind in {TouchKind.REVIVE, TouchKind.RESTORE}),
+                (tc.ts for tc in touches if tc.kind in {TouchKind.REVIVE, TouchKind.RESTORE, TouchKind.REOPEN}),
                 default=None,
             )
             restore_days = None if last_restore is None else (now - last_restore).total_seconds() / 86400.0
@@ -302,7 +304,7 @@ class Collector:
                 (
                     tc.ts
                     for tc in store.touches(tid)
-                    if tc.kind in {TouchKind.REVIVE, TouchKind.RESTORE}
+                    if tc.kind in {TouchKind.REVIVE, TouchKind.RESTORE, TouchKind.REOPEN}
                 ),
                 default=None,
             )

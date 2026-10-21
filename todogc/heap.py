@@ -27,6 +27,8 @@ class TouchKind(str, Enum):
     REVIVE = "revive"      # revived during the collection ceremony
     COLLECT = "collect"    # collected (the eulogy goes in note)
     RESTORE = "restore"    # restored from the trash
+    DONE = "done"          # successfully completed
+    REOPEN = "reopen"      # completed task returned to the active heap
 
     @property
     def is_progress(self) -> bool:
@@ -85,6 +87,11 @@ class State(str, Enum):
     LIVE = "live"            # alive
     CANDIDATE = "candidate"  # marked as a reclaim candidate, awaiting the ceremony
     COLLECTED = "collected"  # collected, sitting in the trash (recoverable)
+    DONE = "done"            # completed successfully, outside the active heap
+
+    @property
+    def is_active(self) -> bool:
+        return self in {State.LIVE, State.CANDIDATE}
 
 
 @dataclass
@@ -127,6 +134,7 @@ class Task:
         age (int): GC rounds survived, used for generation promotion.
         state (State): the lifecycle state.
         created_at (datetime | None): creation time; written by store when persisted.
+        completed_at (datetime | None): current completion time; cleared on reopen, retained in history.
         id (int | None): the primary key; None if not yet persisted.
     """
 
@@ -138,6 +146,7 @@ class Task:
     created_at: datetime | None = None
     id: int | None = None
     ref_strength: ReferenceStrength = ReferenceStrength.SOFT
+    completed_at: datetime | None = None
 
     @property
     def is_unlinked(self) -> bool:

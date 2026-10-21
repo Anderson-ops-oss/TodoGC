@@ -9,7 +9,8 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 
 from todogc.collector import Candidate, GCResult, Reason
-from todogc.heap import TENURING_THRESHOLD, Generation, State, Task, TouchKind
+from todogc.heap import TENURING_THRESHOLD, Generation, Task, TouchKind
+from todogc.i18n import get_locale
 from todogc.i18n import t as _t
 from todogc.store import GCRun, Store
 
@@ -107,7 +108,7 @@ def format_gc_log(
     if result.cycles:
         titles = {c.task.id: c.task.title for c in result.candidates}
         first = result.cycles[0]
-        names = " ⇄ ".join(f"「{titles.get(t, '#' + str(t))}」" for t in first.task_ids)
+        names = " ⇄ ".join(f'"{titles.get(t, "#" + str(t))}"' for t in first.task_ids)
         lines.append(_t("report.gc_log.cycles", lang=lang, count=len(result.cycles), names=names))
     if pause is not None:
         lines.append(_t("report.gc_log.pause", lang=lang, duration=_fmt_duration(pause)))
@@ -229,6 +230,9 @@ class HeapSection:
     name_en: str
     name_cn: str
     rows: list[HeapRow]
+
+    def display_name(self, lang: str | None = None) -> str:
+        return self.name_cn if (lang or get_locale()) == "zh" else self.name_en
 
 
 def _row_kind(task: Task, roots: set[int], is_candidate: bool) -> RowKind:
@@ -405,7 +409,7 @@ def format_heap_map(
     lines = [_t("report.heap_map.title", lang=lang), usage, ""]
     for i, section in enumerate(heap_view(result, roots)):
         conn = "┌" if i == 0 else "├"
-        lines.append(f"  {conn} {section.name_en} · {section.name_cn} ({len(section.rows)})")
+        lines.append(f"  {conn} {section.display_name(lang)} ({len(section.rows)})")
         if section.rows:
             lines.extend(_heap_row_text(r, lang=lang) for r in section.rows)
         else:
@@ -460,7 +464,7 @@ def format_doctor(store: Store, result: GCResult, *, now: datetime | None = None
     roots = store.root_ids()
     findings: list[tuple[int, Task, list[str], list[str]]] = []
     for task in store.list_tasks(record_view=False):
-        if task.state is State.COLLECTED or task.id is None:
+        if not task.state.is_active or task.id is None:
             continue
         views = store.view_count(task.id)
         progress = store.refcount(task.id)

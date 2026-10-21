@@ -3,6 +3,28 @@
 from __future__ import annotations
 
 MESSAGES: dict[str, str] = {
+    "store.error.task_already_done": "任务 #{id} 已完成，请先重新打开。",
+    "store.error.task_not_done": "任务 #{id} 尚未完成，只有已完成任务可以重新打开。",
+    "store.error.unfinished_subtasks": "任务 #{id} 仍有未完成子任务：{tasks}。请先完成或重新关联它们，或通过 --with-subtasks 显式一起完成（网页端勾选包含未完成子任务）。",
+    "store.error.reopen_parent_inactive": "父任务 #{id} 已不活跃。请先重新打开它，或通过 --root-id 选择活跃的父任务。",
+    "store.error.reopen_heap_full": "活跃堆已满（上限 {max}）。请先完成或回收任务、提高上限，或使用 reopen --force。",
+    "cli.done.success": "已完成 {ids}，移出活跃堆，历史保留。",
+    "cli.reopen.success": "已重新打开 #{id}，保留历史，并进入宽限期。",
+    "cli.completed.empty": "暂无已完成任务。",
+    "cli.help.cmd_done": "将任务标记为已完成",
+    "cli.help.done_subtasks": "同时完成所有未完成的后代任务（需显式指定）",
+    "cli.help.cmd_reopen": "将已完成任务重新放回活跃堆",
+    "cli.help.cmd_completed": "列出已完成任务和完成时间",
+    "webapp.sidebar.language_label": "语言",
+    "webapp.language.en": "英文",
+    "webapp.language.zh": "中文",
+    "webapp.done.button": "标记完成",
+    "webapp.done.unfinished": "以下子任务尚未完成，请先完成或重新关联，或勾选一起完成：",
+    "webapp.done.with_subtasks": "标记完成时包含未完成子任务",
+    "webapp.completed.title": "已完成",
+    "webapp.completed.timestamp": "完成时间：{time}",
+    "webapp.completed.parent": "重新打开时的父/目标 ID（0 = 保留原关联）",
+    "webapp.completed.reopen": "重新打开",
     # collector.py
     "collector.error.invalid_mode": "GC mode 必须是 gentle / normal / aggressive",
     "collector.error.invalid_threshold": "GCPolicy 阈值必须大于 0",

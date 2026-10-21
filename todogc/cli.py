@@ -234,6 +234,8 @@ def cmd_ls(store: Store, args: argparse.Namespace) -> int:
     else:
         state = State(args.state) if args.state else None
         tasks = store.list_tasks(state=state)
+        if state is None:
+            tasks = [task for task in tasks if task.state.is_active]
     roots = store.root_ids()
     if console.render_ls(tasks, roots):  # rich installed -> color table
         return 0
@@ -289,6 +291,35 @@ def cmd_snooze(store: Store, args: argparse.Namespace) -> int:
         print(_t("cli.error", error=exc), file=sys.stderr)
         return 1
     print(_t("cli.snooze.done", id=args.id))
+    return 0
+
+
+def cmd_done(store: Store, args: argparse.Namespace) -> int:
+    try:
+        ids = store.complete_task(args.id, with_subtasks=args.with_subtasks, note=args.note)
+    except ValueError as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
+        return 1
+    print(_t("cli.done.success", ids=", ".join(f"#{tid}" for tid in ids)))
+    return 0
+
+
+def cmd_reopen(store: Store, args: argparse.Namespace) -> int:
+    try:
+        store.reopen_task(args.id, root_id=args.root_id, heap_max=args.heap_max, force=args.force)
+    except ValueError as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
+        return 1
+    print(_t("cli.reopen.success", id=args.id))
+    return 0
+
+
+def cmd_completed(store: Store, args: argparse.Namespace) -> int:
+    tasks = store.list_tasks(state=State.DONE, record_view=False)
+    if not tasks:
+        print(_t("cli.completed.empty"))
+    for task in tasks:
+        print(f"#{task.id} {task.title}  completed={task.completed_at.isoformat() if task.completed_at else '-'}")
     return 0
 
 
@@ -525,7 +556,7 @@ def cmd_restore(store: Store, args: argparse.Namespace) -> int:
     if args.root_id is not None:
         try:
             root = store.get_task(args.root_id, record_view=False)
-            if root is None or root.state is State.COLLECTED:
+            if root is None or not root.state.is_active:
                 raise ValueError(_t("cli.restore.invalid_root", root_id=args.root_id))
             if args.root_id == args.id:
                 raise ValueError(_t("cli.restore.self_link"))
@@ -549,6 +580,8 @@ def cmd_show(store: Store, args: argparse.Namespace) -> int:
     task_id = task.persisted_id
     roots = store.root_ids()
     print(f"#{task_id} {task.title}")
+    if task.completed_at is not None:
+        print(f"  completed={task.completed_at.isoformat()}")
     print(
         f"  state={task.state.value} gen={task.gen.value}:{task.age} "
         f"ref={task.ref_strength.value} root={'yes' if task_id in roots else 'no'} "
@@ -703,6 +736,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("id", type=int)
     p.add_argument("note", nargs="?", default=None)
     p.set_defaults(func=cmd_snooze)
+
+    p = sub.add_parser("done", help=_t("cli.help.cmd_done"))
+    p.add_argument("id", type=int)
+    p.add_argument("note", nargs="?", default=None)
+    p.add_argument("--with-subtasks", action="store_true", help=_t("cli.help.done_subtasks"))
+    p.set_defaults(func=cmd_done)
+
+    p = sub.add_parser("reopen", help=_t("cli.help.cmd_reopen"))
+    p.add_argument("id", type=int)
+    p.add_argument("--root-id", type=int, default=None, help=_t("cli.help.restore_root_id"))
+    p.add_argument("--force", action="store_true", help=_t("cli.help.add_force"))
+    p.set_defaults(func=cmd_reopen)
+
+    p = sub.add_parser("completed", help=_t("cli.help.cmd_completed"))
+    p.set_defaults(func=cmd_completed)
 
     p = sub.add_parser("gc", help=_t("cli.help.cmd_gc"))
     p.add_argument(

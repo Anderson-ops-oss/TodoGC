@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS dep (
 CREATE INDEX IF NOT EXISTS idx_touch_task ON touch(task_id);
 """
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -204,6 +204,9 @@ class Store:
                 """
             )
             version = 4
+        if version < 5:
+            self._conn.execute("ALTER TABLE task ADD COLUMN completed_at TEXT")
+            version = 5
         self._conn.execute(
             "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -281,6 +284,7 @@ class Store:
             age=row["age"],
             state=State(row["state"]),
             created_at=Store._from_iso(row["created_at"]),
+            completed_at=Store._from_iso(row["completed_at"]) if row["completed_at"] else None,
         )
 
     @staticmethod
@@ -497,6 +501,82 @@ class Store:
         task = self._row_to_task(row)
         if task.state is State.COLLECTED:
             raise ValueError(_t("store.error.task_already_collected", id=task_id))
+        if task.state is State.DONE:
+            raise ValueError(_t("store.error.task_already_done", id=task_id))
+        return task
+
+    def active_descendants(self, task_id: int) -> list[Task]:
+        """Find unfinished descendants, including nested children, without looping on cycles."""
+        rows = self._conn.execute(
+            """WITH RECURSIVE subtree(id) AS (
+                SELECT id FROM task WHERE id = ?
+                UNION
+                SELECT t.id FROM task t JOIN subtree s ON t.root_id = s.id
+            )
+            SELECT t.* FROM task t JOIN subtree s ON t.id = s.id
+            WHERE t.id != ? AND t.state IN (?, ?) ORDER BY t.id""",
+            (task_id, task_id, State.LIVE.value, State.CANDIDATE.value),
+        ).fetchall()
+        return [self._row_to_task(row) for row in rows]
+
+    def complete_task(
+        self, task_id: int, *, with_subtasks: bool = False,
+        note: str | None = None, ts: datetime | None = None,
+    ) -> list[int]:
+        """Complete a task and, only on explicit request, its unfinished descendants atomically."""
+        with self._conn:
+            self._require_live_task(task_id)
+            children = self.active_descendants(task_id)
+            if children and not with_subtasks:
+                tasks = "; ".join(f"#{t.id} {t.title}" for t in children)
+                raise ValueError(_t("store.error.unfinished_subtasks", id=task_id, tasks=tasks))
+            ids = [task_id, *(t.persisted_id for t in children)]
+            iso = self._to_iso(ts or self._now())
+            for tid in ids:
+                self._conn.execute(
+                    "UPDATE task SET state = ?, completed_at = ? WHERE id = ?",
+                    (State.DONE.value, iso, tid),
+                )
+                self._conn.execute(
+                    "INSERT INTO touch(task_id, kind, ts, note) VALUES (?, ?, ?, ?)",
+                    (tid, TouchKind.DONE.value, iso, note),
+                )
+                self._conn.execute("DELETE FROM watch_state WHERE task_id = ?", (tid,))
+        return ids
+
+    def reopen_task(
+        self, task_id: int, *, root_id: int | None = None,
+        heap_max: int = 50, force: bool = False, ts: datetime | None = None,
+    ) -> Task:
+        """Reopen only this completed task; retain root identity, links, and its full history."""
+        with self._conn:
+            task = self.get_task(task_id, record_view=False)
+            if task is None:
+                raise ValueError(_t("store.error.task_not_found", id=task_id))
+            if task.state is not State.DONE:
+                raise ValueError(_t("store.error.task_not_done", id=task_id))
+            parent = root_id if root_id is not None else task.root_id
+            if parent is not None:
+                if parent == task_id:
+                    raise ValueError(_t("store.error.self_link"))
+                target = self.get_task(parent, record_view=False)
+                if target is None or not target.state.is_active:
+                    raise ValueError(_t("store.error.reopen_parent_inactive", id=parent))
+            if not force and not task.is_meta and self.heap_size() >= heap_max:
+                raise ValueError(_t("store.error.reopen_heap_full", max=heap_max))
+            iso = self._to_iso(ts or self._now())
+            self._conn.execute(
+                "UPDATE task SET state = ?, completed_at = NULL, root_id = ? WHERE id = ?",
+                (State.LIVE.value, parent, task_id),
+            )
+            self._conn.execute(
+                "INSERT INTO touch(task_id, kind, ts, note) VALUES (?, ?, ?, ?)",
+                (task_id, TouchKind.REOPEN.value, iso, f"parent=#{parent}" if parent else None),
+            )
+            self._conn.execute("DELETE FROM watch_state WHERE task_id = ?", (task_id,))
+        task.state = State.LIVE
+        task.completed_at = None
+        task.root_id = parent
         return task
 
     # ---- roots and "reason" edges (option A) ----
@@ -521,7 +601,10 @@ class Store:
         Returns:
             set[int]: ids of tasks with is_root true (may be empty).
         """
-        rows = self._conn.execute("SELECT id FROM task WHERE is_root = 1").fetchall()
+        rows = self._conn.execute(
+            "SELECT id FROM task WHERE is_root = 1 AND state IN (?, ?)",
+            (State.LIVE.value, State.CANDIDATE.value),
+        ).fetchall()
         return {int(r["id"]) for r in rows}
 
     def add_dep(self, task_id: int, ref_id: int) -> None:
@@ -576,7 +659,7 @@ class Store:
         return [(int(r["task_id"]), int(r["ref_id"])) for r in rows]
 
     def heap_size(self) -> int:
-        """The current count of tasks occupying the active heap: non-COLLECTED and non-Metaspace meta-tasks.
+        """Count active, non-Metaspace tasks; completed and collected tasks do not occupy the heap.
 
         Matches -Xmx's accounting — Metaspace (meta-tasks) never counts toward -Xmx in the
         JVM either, hence the exclusion.
@@ -585,8 +668,8 @@ class Store:
             int: the number of tasks on the active heap.
         """
         row = self._conn.execute(
-            "SELECT count(*) FROM task WHERE state != ? AND gen != ?",
-            (State.COLLECTED.value, Generation.META.value),
+            "SELECT count(*) FROM task WHERE state IN (?, ?) AND gen != ?",
+            (State.LIVE.value, State.CANDIDATE.value, Generation.META.value),
         ).fetchone()
         return int(row[0])
 
@@ -722,6 +805,7 @@ class Store:
         """Count of consecutive DEFERs since the last progress/edit/revive/restore."""
         reset = {
             TouchKind.PROGRESS, TouchKind.EDIT, TouchKind.REVIVE, TouchKind.RESTORE,
+            TouchKind.REOPEN,
         }
         count = 0
         for touch in reversed(self.touches(task_id)):
