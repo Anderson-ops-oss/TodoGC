@@ -62,6 +62,8 @@ todogc dep 3 4                                             # #3's reason is #4
 todogc dep 4 3                                             # #4's reason is #3 — a cycle
 
 todogc ls                                    # look at your heap
+todogc ls -q "write" --root-id 1 --sort newest # filter a goal's entire subtree
+todogc search "payment" --notes               # read-only search, including history notes
 todogc tree                                  # parent/child hierarchy, including Inbox; read-only
 todogc tree --show-completed                 # also show completed nodes
 todogc capture "Explore a browser extension" # quickly record an idea in Inbox
@@ -471,6 +473,35 @@ Both start a fresh review period and preserve the original history. Passing `--r
 explicitly restores/reopens it as an ordinary task under that parent instead. Restoring
 and reopening respect capacity; `--force` explicitly allows over-allocation in the CLI.
 
+## Search and filters
+
+```bash
+todogc ls -q "write"                           # active, organized, awake tasks only
+todogc ls --root-id 1 --sort title --limit 10    # root #1 plus every level of descendants
+todogc ls --scope inbox                        # pending, awake Inbox ideas
+todogc ls --scope snoozed                      # currently sleeping tasks, including ideas
+todogc search "release"                        # all states, including Done and Collected
+todogc search "feedback" --notes --scope active
+todogc search "guide" --scope done --sort newest
+```
+
+Keywords match a literal, case-insensitive substring of the title. `--notes` also
+searches history notes; `%`, `_`, and quotes have no special meaning. Filters combine:
+`--root-id` includes that node and its entire parent/child subtree, independent of
+dependency/reason edges. It accepts any task ID, including a subtask.
+
+`--scope` accepts `active`, `inbox`, `snoozed`, `done`, `collected`, or `all`.
+`active` excludes Inbox ideas and sleeping tasks. Inbox shows pending, awake ideas;
+use `snoozed` for sleeping ideas. The existing `--state` option remains available
+as an alternative to `--scope`; `--state candidate` still computes current GC candidates.
+Sort orders are `id`, `newest`, `oldest`, `title`, and `updated`; updated ignores views.
+`--limit` applies after every filter and sorting.
+
+`search` and Web browsing are read-only. `ls` records views only for results actually
+displayed, after filtering and limiting. Its default range still excludes Done.
+On the Web, open **Tasks → Search & filters** to find and operate on matching tasks.
+Search filters are retained when navigating between pages in the same session.
+
 ## Task tree
 
 `todogc web` opens with a task tree and a detail panel. Use the arrows to expand or
@@ -558,6 +589,7 @@ todogc/
   notify.py     ntfy push channel (JSON publish, zero-dep, plain urllib)
   watcher.py    scheduled-checkup core: event-driven + debounce + heartbeat digest + advisory single-instance lock
   tree.py       read-only task hierarchy, paths, grouping and legacy-cycle handling
+  query.py      shared read-only search, ranges, subtree filtering and sorting
   cli.py        command line + Stop-the-world ceremony + todogc watch + --lang
   webapp.py     Streamlit Web UI (task tree + details + heap diagnostics + watcher + language switch, optional)
 ```

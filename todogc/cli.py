@@ -19,6 +19,7 @@ from todogc.config import AppConfig, ConfigError, load_config
 from todogc.heap import ReferenceStrength, State, TouchKind
 from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES, set_locale
 from todogc.i18n import t as _t
+from todogc.query import SCOPES, SORTS, TaskQuery, query_tasks
 from todogc.store import Store
 from todogc.scheduling import local_time, parse_snooze_time
 from todogc.review import WeeklyReview, build_review, format_review
@@ -238,18 +239,29 @@ def cmd_ls(store: Store, args: argparse.Namespace) -> int:
     Returns:
         int: exit code.
     """
-    if args.state == State.CANDIDATE.value:
-        result = _run_gc(store, datetime.now(timezone.utc), args.gc_policy)
-        tasks = [c.task for c in result.candidates]
-    else:
-        state = State(args.state) if args.state else None
-        tasks = store.list_tasks(state=state, active_only=state is None, inbox=False if state is None else None,
-                                 snoozed=False if state is None else None)
+    now = datetime.now(timezone.utc)
+    state = State(args.state) if args.state else None
+    is_search = args.cmd == "search"
+    scope = args.scope or ("all" if is_search or state is not None else "active")
+    candidates = None
+    if state is State.CANDIDATE:
+        result = _run_gc(store, now, args.gc_policy)
+        candidates = {c.task.persisted_id for c in result.candidates}
+    try:
+        tasks = query_tasks(store, TaskQuery(
+            text=args.query if is_search else args.search, scope=scope, root_id=args.root_id,
+            sort=args.sort, notes=args.notes, limit=args.limit, state=state,
+        ), now=now, candidate_ids=candidates)
+    except ValueError as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
+        return 1
+    if not is_search and state is not State.CANDIDATE:
+        store.record_views(tasks, ts=now)
     roots = store.root_ids()
-    if console.render_ls(tasks, roots):  # rich installed -> color table
-        return 0
     if not tasks:
-        print(_t("cli.ls.empty_heap"))
+        print(_t("query.empty"))
+        return 0
+    if console.render_ls(tasks, roots):  # rich installed -> color table
         return 0
     for t in tasks:
         mark = "★" if t.id in roots else " "
@@ -794,6 +806,18 @@ def cmd_review(store: Store, args: argparse.Namespace) -> int:
 
 # ============ Assembly and entry point ============
 
+def _add_query_arguments(parser: argparse.ArgumentParser, *, search: bool = False) -> None:
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--state", choices=[s.value for s in State], default=None)
+    scope.add_argument("--scope", choices=SCOPES, help=_t("query.help.scope"))
+    if not search:
+        parser.add_argument("--search", "-q", default="", help=_t("query.help.text"))
+    parser.add_argument("--root-id", type=_positive_int, help=_t("query.help.root"))
+    parser.add_argument("--sort", choices=SORTS, default="id", help=_t("query.help.sort"))
+    parser.add_argument("--notes", action="store_true", help=_t("query.help.notes"))
+    parser.add_argument("--limit", type=_positive_int, help=_t("query.help.limit"))
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser with all subcommands wired up.
 
@@ -856,7 +880,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_dep)
 
     p = sub.add_parser("ls", help=_t("cli.help.cmd_ls"))
-    p.add_argument("--state", choices=[s.value for s in State], default=None)
+    _add_query_arguments(p)
+    p.set_defaults(func=cmd_ls)
+
+    p = sub.add_parser("search", help=_t("query.help.command"))
+    p.add_argument("query", help=_t("query.help.text"))
+    _add_query_arguments(p, search=True)
     p.set_defaults(func=cmd_ls)
 
     p = sub.add_parser("progress", help=_t("cli.help.cmd_progress"))

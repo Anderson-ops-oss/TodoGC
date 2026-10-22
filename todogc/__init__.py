@@ -24,6 +24,7 @@ from todogc.heap import (
 from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES, get_locale, n_, set_locale, t
 from todogc.notify import NotifyError, NtfyChannel
 from todogc.store import GCRun, Store
+from todogc.query import TaskQuery, query_tasks
 from todogc.watcher import TickEvent, TickResult, Watcher, run_tick
 
 __version__ = "0.10.0"
@@ -41,6 +42,8 @@ __all__ = [
     # store
     "Store",
     "GCRun",
+    "TaskQuery",
+    "query_tasks",
     # config
     "AppConfig",
     "ConfigError",

@@ -966,14 +966,35 @@ class Store:
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         rows = self._conn.execute("SELECT * FROM task" + where + " ORDER BY id", params).fetchall()
         tasks = [self._row_to_task(r) for r in rows]
-        if record_view and tasks:
-            iso = self._to_iso(ts or self._now())
+        if record_view:
+            self.record_views(tasks, ts=ts)
+        return tasks
+
+    def record_views(self, tasks: list[Task], *, ts: datetime | None = None) -> None:
+        """Record views only after a caller has finished filtering and limiting."""
+        if not tasks:
+            return
+        iso = self._to_iso(ts or self._now())
+        with self._conn:
             self._conn.executemany(
                 "INSERT INTO touch (task_id, kind, ts, note) VALUES (?, ?, ?, NULL)",
-                [(t.id, TouchKind.VIEW.value, iso) for t in tasks],
+                [(task.persisted_id, TouchKind.VIEW.value, iso) for task in tasks],
             )
-            self._conn.commit()
-        return tasks
+
+    def task_notes(self) -> dict[int, list[str]]:
+        notes: dict[int, list[str]] = {}
+        for row in self._conn.execute("SELECT task_id, note FROM touch WHERE note IS NOT NULL"):
+            notes.setdefault(int(row[0]), []).append(str(row[1]))
+        return notes
+
+    def last_activity_times(self) -> dict[int, datetime]:
+        """Browsing never changes the 'recently updated' order."""
+        return {
+            int(row[0]): self._from_iso(row[1])
+            for row in self._conn.execute(
+                "SELECT task_id, MAX(ts) FROM touch WHERE kind != 'view' GROUP BY task_id"
+            )
+        }
 
     def touches(self, task_id: int) -> list[Touch]:
         """Get all touch events for a task, ascending by time (the raw material for liveness / the GC log).

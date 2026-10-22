@@ -18,6 +18,7 @@ from todogc.heap import ReferenceStrength, State, Task, TouchKind
 from todogc.i18n import SUPPORTED_LOCALES
 from todogc.i18n import t as _t
 from todogc.report import HeapRow, RowKind
+from todogc.query import SCOPES, SORTS, TaskQuery, query_tasks
 from todogc.review import WeeklyReview, build_review, format_review
 from todogc.review_card import render_png, render_svg
 from todogc.store import Store
@@ -353,7 +354,8 @@ def _render_add(store: Store, heap_max: int, now: datetime, *, lang: str) -> Non
     st.rerun()
 
 
-def _render_graveyard(store: Store, heap_max: int, now: datetime, *, lang: str) -> None:
+def _render_graveyard(store: Store, heap_max: int, now: datetime, *, lang: str,
+                      tasks: list[Task] | None = None) -> None:
     """Render the graveyard: epitaphs for collected tasks + one-click restore.
 
     Args:
@@ -364,7 +366,7 @@ def _render_graveyard(store: Store, heap_max: int, now: datetime, *, lang: str) 
     Returns:
         None
     """
-    dead = store.list_tasks(state=State.COLLECTED, record_view=False)
+    dead = tasks if tasks is not None else store.list_tasks(state=State.COLLECTED, record_view=False)
     if not dead:
         st.caption(_t("cli.graveyard.empty", lang=lang))
         return
@@ -731,22 +733,7 @@ def _render_task_tree(store: Store, heap_max: int, now: datetime, *, lang: str) 
     with left:
         _render_tree_nodes(tree, roots, selected, now, lang=lang)
     with right:
-        task = tree.tasks[selected]
-        st.text(f"#{task.id} {task.title}")
-        st.caption(_t("webapp.tree.path", lang=lang))
-        st.text(" / ".join(f"#{item.id} {item.title}" for item in tree.path(selected)))
-        st.caption(_t("webapp.tree.generation_label", lang=lang, name=_t(f"webapp.tree.generation.{task.gen.value}", lang=lang)))
-        if task.state.is_active:
-            _render_snooze(store, task, now, lang=lang)
-        if task.state is State.DONE:
-            _render_selected_completed(store, task, heap_max, now, lang=lang)
-        elif task.is_snoozed(now):
-            _render_task_history(store, selected, lang=lang)
-        elif task.in_inbox:
-            _render_inbox_details(store, task, now, lang=lang)
-        else:
-            _render_task_details(store, task, heap_max, now, lang=lang)
-
+        _render_selected_task(store, tree.tasks[selected], heap_max, now, lang=lang)
 
 def _render_completed(store: Store, heap_max: int, now: datetime, *, lang: str) -> None:
     tasks = store.list_tasks(state=State.DONE, record_view=False)
@@ -853,6 +840,71 @@ def _render_weekly_review(store: Store, now: datetime, *, lang: str) -> None:
         st.image(render_svg(review).decode("utf-8"), width=540)
 
 
+def _render_selected_task(store: Store, task: Task, heap_max: int, now: datetime, *, lang: str) -> None:
+    """Share task actions between tree and search results."""
+    st.text(f"#{task.id} {task.title}")
+    tree = build_task_tree(store.list_tasks(record_view=False), store.root_ids(active_only=False),
+                           show_completed=True, show_snoozed=True, now=now)
+    if task.persisted_id in tree.tasks:
+        st.caption(_t("webapp.tree.path", lang=lang))
+        st.text(" / ".join(f"#{item.id} {item.title}" for item in tree.path(task.persisted_id)))
+    st.caption(_t("webapp.tree.generation_label", lang=lang, name=_t(f"webapp.tree.generation.{task.gen.value}", lang=lang)))
+    if task.state.is_active:
+        _render_snooze(store, task, now, lang=lang)
+    if task.state is State.DONE:
+        _render_selected_completed(store, task, heap_max, now, lang=lang)
+    elif task.state is State.COLLECTED:
+        _render_graveyard(store, heap_max, now, lang=lang, tasks=[task])
+    elif task.is_snoozed(now):
+        _render_task_history(store, task.persisted_id, lang=lang)
+    elif task.in_inbox:
+        _render_inbox_details(store, task, now, lang=lang)
+    else:
+        _render_task_details(store, task, heap_max, now, lang=lang)
+
+def _clear_search() -> None:
+    for key, value in {"search_text": "", "search_scope": "active", "search_root": 0,
+                       "search_sort": "id", "search_notes": False}.items():
+        st.session_state[key] = value
+
+
+def _render_search(store: Store, heap_max: int, now: datetime, *, lang: str) -> None:
+    text = st.text_input(_t("query.text", lang=lang), key="search_text")
+    cols = st.columns(3)
+    scope = cols[0].selectbox(_t("query.scope", lang=lang), SCOPES, key="search_scope",
+                              format_func=lambda value: _t(f"query.scope.{value}", lang=lang)) or "active"
+    tasks = {task.persisted_id: task for task in store.list_tasks(record_view=False)}
+    if st.session_state.get("search_root", 0) not in {0, *tasks}:
+        st.session_state["search_root"] = 0
+    root = cols[1].selectbox(_t("query.root", lang=lang), [0, *tasks], key="search_root",
+                            format_func=lambda value: f"#{value} {tasks[value].title}" if value else _t("query.root_all", lang=lang))
+    sort = cols[2].selectbox(_t("query.sort", lang=lang), SORTS, key="search_sort",
+                            format_func=lambda value: _t(f"query.sort.{value}", lang=lang)) or "id"
+    notes = st.checkbox(_t("query.notes", lang=lang), key="search_notes")
+    st.button(_t("query.reset", lang=lang), key="search_reset", on_click=_clear_search)
+    matches = query_tasks(store, TaskQuery(text=text, scope=scope, root_id=root or None, sort=sort, notes=notes), now=now)
+    st.caption(_t("query.count", lang=lang, count=len(matches)))
+    if not matches:
+        st.info(_t("query.empty", lang=lang))
+        return
+    selected = st.session_state.get("search_selected_id")
+    if selected not in {task.id for task in matches}:
+        selected = matches[0].persisted_id
+        st.session_state["search_selected_id"] = selected
+    left, right = st.columns([4, 6], gap="large")
+    roots = store.root_ids(active_only=False)
+    with left:
+        for task in matches:
+            if st.button(task_label(task, roots, now=now, lang=lang) + f"  [{task.state.value}]",
+                         key=f"search_select_{task.id}", use_container_width=True,
+                         type="primary" if task.id == selected else "secondary"):
+                st.session_state["search_selected_id"] = task.persisted_id
+                st.rerun()
+    with right:
+        assert selected is not None
+        _render_selected_task(store, tasks[selected], heap_max, now, lang=lang)
+
+
 def main() -> None:
     """Streamlit entry point: assembles the sidebar (add + -Xmx) and the main area (heap map / GC log / ceremony / graveyard).
 
@@ -866,6 +918,10 @@ def main() -> None:
     """
     if "lang" not in st.session_state:
         st.session_state["lang"] = load_config().lang
+    # Preserve search filters while their widgets are on another page.
+    for key in ("task_view", "search_text", "search_scope", "search_root", "search_sort", "search_notes"):
+        if key in st.session_state:
+            st.session_state[key] = st.session_state[key]
     lang = st.session_state["lang"]
     st.set_page_config(page_title=_t("webapp.page.title", lang=lang), page_icon="🗑️", layout="wide")
     now = datetime.now(timezone.utc)
@@ -927,6 +983,11 @@ def main() -> None:
             return
 
         st.title(_t("webapp.tree.title", lang=lang))
+        view = st.radio(_t("nav.view", lang=lang), ["tree", "search"], key="task_view", horizontal=True,
+                        format_func=lambda value: _t(f"nav.{value}", lang=lang))
+        if view == "search":
+            _render_search(store, heap_max, now, lang=lang)
+            return
         _render_task_tree(store, heap_max, now, lang=lang)
 
         st.divider()

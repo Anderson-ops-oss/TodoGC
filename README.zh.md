@@ -373,6 +373,22 @@ Unlinked 任务可通过 **Move to Inbox** 明确移入。收件箱想法需要�
 明确提供 `--root-id` 则直接转为父任务下的普通任务。恢复与重新打开均检查容量，CLI 可用
 `--force` 明确超配。
 
+## 搜索与筛选
+
+```bash
+todogc ls -q "write" --root-id 1 --sort newest --limit 10
+todogc ls --scope inbox
+todogc ls --scope snoozed
+todogc search "release" --notes --scope all
+```
+
+`ls` 默认只列出非 Inbox、未休眠的活跃任务；`search` 默认搜索所有状态且不增加 view。
+关键词为不区分大小写的字面子串，`--notes` 同时搜索历史备注。`--root-id` 可以是任意任务，
+包含它自身及所有层级的子任务，不跟随理由边。`--scope` 支持 active、inbox、snoozed、done、
+collected、all，与原有 `--state` 二选一。排序支持 id、newest、oldest、title、updated，
+updated 忽略浏览事件；`--limit` 在筛选和排序后生效，`ls` 只给实际显示的任务增加 view。
+网页在 **Tasks → Search & filters** 中使用相同规则，同一会话切换页面会保留搜索条件。
+
 ## 任务树
 
 `todogc web` 首屏显示任务树和详情面板。点击箭头展开、收起多层子任务，点击节点查看路径、
