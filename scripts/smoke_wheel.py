@@ -34,6 +34,10 @@ def smoke_wheel(wheel: Path) -> None:
            if not key.startswith("TODOGC_") and key not in {"PYTHONPATH", "PYTHONHOME"}}
     with tempfile.TemporaryDirectory(prefix="todogc-wheel-") as directory:
         root = Path(directory)
+        home = root / "user home"
+        home.mkdir()
+        env.update({"HOME": str(home), "USERPROFILE": str(home),
+                    "CLAUDE_CONFIG_DIR": str(home / ".claude"), "PYTHONIOENCODING": "utf-8"})
         venv.EnvBuilder(with_pip=True).create(root / "env")
         executable_dir = root / "env" / ("Scripts" if os.name == "nt" else "bin")
         python = executable_dir / ("python.exe" if os.name == "nt" else "python")
@@ -65,10 +69,10 @@ def smoke_wheel(wheel: Path) -> None:
         (other_project / "todogc.toml").write_text("Invalid unrelated project configuration")
         (other_project / "todogc.db").write_bytes(b"Unrelated database")
         for platform in ("codex", "claude-code"):
-            directory = root / "installed skills" / platform
-            result = json.loads(run(str(cli), "--db", str(root / "todogc.db"),
-                                    "--config", str(root / "todogc.toml"), "skill", "install",
-                                    "--target", platform, "--directory", str(directory), "--json"))[0]
+            result = json.loads(run(str(cli), "skill", "install", "--target", platform, "--json"))[0]
+            directory = Path(result["path"])
+            if result["database"] != str(home / ".todogc/todogc.db"):
+                raise ValueError("CLI and installed skill selected different default databases")
             if not result["up_to_date"]:
                 raise ValueError(f"Installed skill is not current: {platform}")
             runtime = json.loads((directory / "runtime.json").read_text())
@@ -76,8 +80,12 @@ def smoke_wheel(wheel: Path) -> None:
                       "--config", runtime["config"]]
             title = f"Skill runtime for {platform}"
             run(*prefix, "capture", title, cwd=other_project)
-            if title not in run(*prefix, "search", title, "--scope", "inbox", cwd=other_project):
-                raise ValueError(f"Installed skill could not use its bound runtime: {platform}")
+            if title not in run(str(cli), "search", title, "--scope", "inbox", cwd=other_project):
+                raise ValueError(f"Ordinary CLI could not read the skill's default task list: {platform}")
+            cli_title = f"CLI runtime for {platform}"
+            run(str(cli), "capture", cli_title, cwd=other_project)
+            if cli_title not in run(*prefix, "search", cli_title, "--scope", "inbox", cwd=other_project):
+                raise ValueError(f"Installed skill could not read the CLI's default task list: {platform}")
         if (other_project / "todogc.db").read_bytes() != b"Unrelated database":
             raise ValueError("Skill command touched the wrong database")
     print(f"todogc {version}: isolated pip install, CLI, and both installed skill runtimes passed")

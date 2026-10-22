@@ -18,6 +18,7 @@ from todogc.heap import ReferenceStrength, State, Task, TouchKind
 from todogc.i18n import SUPPORTED_LOCALES
 from todogc.i18n import t as _t
 from todogc.report import HeapRow, RowKind
+from todogc.paths import prepare_database, resolve_database
 from todogc.query import SCOPES, SORTS, TaskQuery, query_tasks
 from todogc.review import WeeklyReview, build_review, format_review
 from todogc.review_card import render_png, render_svg
@@ -84,12 +85,8 @@ _ROW_COLOR: dict[RowKind, str] = {
 # ============ Dependency-free helpers (don't touch streamlit, safe to import) ============
 
 def _db_path() -> str:
-    """Resolve the database path: prefers the TODOGC_DB env var, same source as the CLI's --db default.
-
-    Returns:
-        str: the database file path (default "todogc.db").
-    """
-    return os.environ.get("TODOGC_DB", "todogc.db")
+    """Use the CLI and skill installer's database selection without creating files."""
+    return resolve_database()
 
 
 def _default_heap_max() -> int:
@@ -1060,7 +1057,7 @@ def main() -> None:
         max_skips=cfg.max_consecutive_skips,
         restore_grace_days=cfg.restore_grace_days,
     )
-    store = Store(_db_path())
+    store = Store(prepare_database(_db_path()))
     try:
         if "navigate_to" in st.session_state:
             st.session_state["page"] = st.session_state.pop("navigate_to")

@@ -77,18 +77,19 @@ todogc skill status --json
 AI 使用现有任务命令，返回真实编号和操作结果；也支持 Today、推进/完成、Snooze、任务树及周报。
 
 安装器把当前 Python 和数据库、配置文件的绝对路径记录在 Skill 旁的 `runtime.json` 中。
-优先使用 `--db` / `TODOGC_DB`；新增平台会复用已有官方 Skill 的绑定。
-没有已有绑定时，复用当前目录已有的 `todogc.db`，再否则选择 `~/.todogc/todogc.db`。
-配置文件依次取 `--config` / `TODOGC_CONFIG`、
-当前目录已有的 `todogc.toml`、`~/.todogc/todogc.toml`。
+CLI、网页与安装器使用同一套路径规则：`--db` / `TODOGC_DB` 优先，
+其次沿用已有官方 Skill 的绑定，再使用 `~/.todogc/todogc.db`。
+没有绑定且用户目录下尚无共享数据库时，兼容当前目录已有的 `todogc.db`。
+配置文件使用相同规则，对应 `--config` / `TODOGC_CONFIG` 和 `todogc.toml`。
 安装过程不创建或迁移数据库，也不复制凭据；重装、升级保留已有绑定，除非明确覆盖：
 
 ```bash
 todogc --db /absolute/path/tasks.db --config /absolute/path/todogc.toml skill install --target all
 ```
 
-在终端/网页使用相同路径，就会打开 Skill 使用的任务列表；普通 CLI 仍默认使用当前目录。
-首次操作任务时，Skill 会按需创建数据目录，切换代码项目时保持同一任务库。
+安装后直接执行 `todogc ls` 或使用网页，就会自动打开 Skill 的任务列表，切换项目也不变。
+新电脑无需手动设置环境变量；首次操作任务时按需创建数据目录，安装与状态查询不创建或迁移数据库。
+如果两个官方 Skill 有意绑定了不同路径，需用 `--db`（必要时加 `--config`）明确选择，避免误开任务库。
 Claude Code 支持 `CLAUDE_CONFIG_DIR`；`--directory PATH` 可为单个平台指定完整 Skill 目录。
 安装器自动更新未修改的官方文件，本地修改需要明确 `--force` 才覆盖，无关文件保留。
 只升级 Python 包不会更新复制的 Skill，需要再次运行安装器。
@@ -115,7 +116,12 @@ Claude Code 支持 `CLAUDE_CONFIG_DIR`；`--directory PATH` 可为单个平台�
 
 ### 数据与配置
 
-默认使用**当前目录的 `todogc.db` 和 `todogc.toml`**。数据库首次使用时创建，配置文件可选。
+新安装默认使用 **`~/.todogc/todogc.db` 和 `~/.todogc/todogc.toml`**，
+其中 `~` 在 Windows、macOS、Linux 上均表示用户主目录。
+已有官方 Skill 的绑定优先，因此 CLI 和 agent 跨项目使用同一任务库。
+无绑定且对应共享文件不存在时，兼容当前目录已有文件；不自动移动或合并数据库。
+需要独立项目任务库时使用 `--db ./todogc.db`。
+数据库及父目录首次操作任务时创建，配置文件可选。
 完整配置模板见 [todogc.toml.example](todogc.toml.example)。
 
 全局选项放在**子命令前面**：
@@ -127,7 +133,8 @@ todogc --heap-max 100 --gc-mode gentle gc --dry-run
 ```
 
 切换目录或管理 Watch 时应指向同一数据库。`--config` 只选择配置文件，不选择数据库；
-可在 shell 中设置 `TODOGC_DB` 和 `TODOGC_CONFIG`，让不同会话使用固定路径。
+需要自定义任务库时，可在安装 Skill 时指定 `--db` / `--config`，
+或设置 `TODOGC_DB` / `TODOGC_CONFIG`；普通安装无需这些设置就能自动共用默认任务库。
 
 优先级为 **CLI 参数 > 环境变量 > 配置文件 > 默认值**。常用配置如下：
 

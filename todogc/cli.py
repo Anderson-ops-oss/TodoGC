@@ -21,6 +21,7 @@ from todogc.config import AppConfig, ConfigError, load_config
 from todogc.heap import ReferenceStrength, State, TouchKind
 from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES, set_locale
 from todogc.i18n import t as _t
+from todogc.paths import prepare_database, resolve_database
 from todogc.query import SCOPES, SORTS, TaskQuery, query_tasks
 from todogc.store import Store
 from todogc.scheduling import local_time, parse_snooze_time
@@ -1172,8 +1173,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cmd == "skill":
         return cmd_skill(args)
-    args.db = args.db if args.db is not None else "todogc.db"
     try:
+        args.db = resolve_database(args.db)
         args.watch_config_unavailable = False
         try:
             cfg = load_config(args.config)
@@ -1200,7 +1201,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.cmd == "watch":
         return cmd_watch(None, args)
-    store = Store(args.db)
+    store = Store(prepare_database(args.db))
     try:
         return args.func(store, args)
     finally:

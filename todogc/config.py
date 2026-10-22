@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from todogc.paths import resolve_config
+
 from todogc.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES
 from todogc.i18n import t as _t
 
@@ -160,11 +162,11 @@ def _review_timezone(value: Any) -> str:
 def load_config(path: str | Path | None = None, *, environ: dict[str, str] | None = None) -> AppConfig:
     """Read the config file and apply environment variable overrides.
 
-    Precedence: environment variables > the specified/current-directory config file >
-    defaults. CLI arguments then override this again, in ``cli.main``.
+    Paths use the same explicit/environment/bound/shared defaults as the CLI and
+    skill installer. Environment settings override file values; CLI options win last.
     """
     env = os.environ if environ is None else environ
-    config_path = Path(path or env.get("TODOGC_CONFIG", "todogc.toml"))
+    config_path = Path(resolve_config(path, environ=env))
     data: dict[str, Any] = {}
     if config_path.exists():
         try:

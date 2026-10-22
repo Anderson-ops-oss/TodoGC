@@ -4,11 +4,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from todogc import i18n
 from todogc.store import Store
+
+
+@pytest.fixture(autouse=True)
+def _isolated_user_paths(tmp_path, monkeypatch):
+    """Tests must never discover or open the developer's personal task database."""
+    home = tmp_path / "isolated home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    for name in ("TODOGC_DB", "TODOGC_CONFIG", "CLAUDE_CONFIG_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
 
 
 @pytest.fixture(autouse=True)

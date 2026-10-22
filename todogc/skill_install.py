@@ -13,7 +13,9 @@ from typing import Any
 
 from todogc import __version__
 
-TARGETS = ("codex", "claude-code", "all")
+from todogc.paths import (
+    TARGETS, _check_path, read_runtime as _runtime, resolve_config, resolve_database, skill_directory,
+)
 BUNDLE_FILES = ("SKILL.md", "references/commands.md", "agents/openai.yaml")
 
 
@@ -32,48 +34,6 @@ def _digest(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def skill_directory(target: str, *, destination: str | Path | None = None) -> Path:
-    if target not in TARGETS[:-1]:
-        raise ValueError("Choose codex or claude-code for a single skill directory")
-    if destination is not None:
-        return Path(destination).expanduser().absolute()
-    if target == "codex":
-        return Path.home() / ".agents" / "skills" / "todogc"
-    config_home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser()
-    return config_home.absolute() / "skills" / "todogc"
-
-
-def _check_path(directory: Path, relative: str) -> Path:
-    # Never follow a skill or a bundled file replaced with a symlink during an update.
-    path = directory
-    for part in ("", *PurePosixPath(relative).parts):
-        path = path / part if part else path
-        if path.is_symlink():
-            raise ValueError(f"Refusing to overwrite a symlink: {path}")
-    if directory.exists() and not directory.is_dir():
-        raise ValueError(f"Skill destination is not a directory: {directory}")
-    return path
-
-
-def _runtime(directory: Path) -> dict[str, Any] | None:
-    path = _check_path(directory, "runtime.json")
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if (not isinstance(data, dict) or data.get("managed_by") != "todogc"
-                or data.get("schema") != 1 or not isinstance(data.get("version"), str)
-                or not isinstance(data.get("files"), dict)
-                or not all(isinstance(value, str) for value in data["files"].values())):
-            return None
-        for key in ("python", "database", "config"):
-            if not isinstance(data.get(key), str) or not Path(data[key]).is_absolute():
-                return None
-        return data
-    except (ValueError, UnicodeError):
-        return None
-
-
 def _file_path(value: str | Path) -> str:
     if str(value) == ":memory:":
         raise ValueError("An installed skill needs a persistent database, not :memory:")
@@ -85,14 +45,12 @@ def _file_path(value: str | Path) -> str:
 
 def _binding(previous: dict[str, Any] | None, *, database: str | None, config: str | None) -> dict[str, Any]:
     # Preserve explicit bindings on upgrades, including when invoked from another repo.
-    if database is None:
-        database = str(previous["database"]) if previous else str(
-            Path.cwd() / "todogc.db" if (Path.cwd() / "todogc.db").is_file()
-            else Path.home() / ".todogc" / "todogc.db")
-    if config is None:
-        config = str(previous["config"]) if previous else str(
-            Path.cwd() / "todogc.toml" if (Path.cwd() / "todogc.toml").is_file()
-            else Path.home() / ".todogc" / "todogc.toml")
+    if database is None and "TODOGC_DB" not in os.environ and previous:
+        database = str(previous["database"])
+    if config is None and "TODOGC_CONFIG" not in os.environ and previous:
+        config = str(previous["config"])
+    database = resolve_database(database)
+    config = resolve_config(config)
     return {
         "managed_by": "todogc", "schema": 1, "version": __version__,
         # Preserve the venv/pipx executable path: resolving its symlink loses the environment.

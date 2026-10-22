@@ -88,11 +88,11 @@ the existing task commands and returns actual task IDs/results. The skill also
 supports Today, progress/completion, Snooze, task trees, and weekly reviews.
 
 Installation records the current Python executable and absolute database/config
-paths in `runtime.json` beside the skill. Explicit `--db` / `TODOGC_DB` wins.
-A newly added platform reuses an existing managed skill's bindings. Otherwise,
-an existing `todogc.db` in the current directory is reused, or
-`~/.todogc/todogc.db` is selected. Configuration follows `--config` /
-`TODOGC_CONFIG`, an existing local `todogc.toml`, or `~/.todogc/todogc.toml`.
+paths in `runtime.json` beside the skill. The CLI, Web UI, and installer share
+one path-selection rule: explicit `--db` / `TODOGC_DB`, an existing managed skill's
+binding, then `~/.todogc/todogc.db`. When neither a binding nor a shared database
+exists, an existing local `todogc.db` is reused for compatibility. Configuration
+uses the same rule with `--config` / `TODOGC_CONFIG` and `todogc.toml`.
 The installer does not create or migrate the database or copy credentials.
 Reinstalling/upgrading preserves existing bindings unless explicitly overridden:
 
@@ -100,11 +100,16 @@ Reinstalling/upgrading preserves existing bindings unless explicitly overridden:
 todogc --db /absolute/path/tasks.db --config /absolute/path/todogc.toml skill install --target all
 ```
 
-Use those same paths with the CLI/Web UI to open the skill's task list. Ordinary
-CLI defaults still use the current directory. The skill creates the data directory
-when needed for the first task, rather than silently switching lists across projects.
+After installation, ordinary `todogc ls` and the Web UI automatically open the
+skill's task list, even from another project. No shell environment changes are
+needed on a new computer. Task commands create the data directory on first use;
+installation and status inspection do not create or migrate task databases.
+If two managed skills intentionally use different bindings, select one explicitly
+with `--db` (and `--config` if needed) instead of guessing which list to open.
 `CLAUDE_CONFIG_DIR` is honored for Claude Code. `--directory PATH` overrides the
-exact skill directory for a single target. Managed, unedited files update in place;
+exact skill directory for a single target. Bindings in a custom directory are not
+automatically discovered by the CLI; use explicit paths for that standalone copy.
+Managed, unedited files update in place;
 local edits are preserved unless `--force` is explicitly supplied, and unrelated
 files are retained. Upgrading the Python package alone does not refresh copied
 skills: rerun the skill installer. This is a local-agent integration; cloud sessions
@@ -131,8 +136,13 @@ All command examples and their behavior are grouped here:
 
 ### Data and configuration
 
-By default, TodoGC uses **`todogc.db` and `todogc.toml` in the current directory**.
-The database is created on first use; the config file is optional. The complete
+New installations use **`~/.todogc/todogc.db` and `~/.todogc/todogc.toml`**
+(`~` is the user's home directory on Windows, macOS, and Linux). An installed
+managed skill's existing bindings take precedence, so CLI and agent commands
+share a task list across projects. If no binding or shared file exists, an existing
+current-directory file is reused for compatibility; files are never moved or merged.
+Use `--db ./todogc.db` for an intentional project-local list.
+The database and its parent directory are created on first use; the config file is optional. The complete
 configuration template is [todogc.toml.example](https://github.com/Anderson-ops-oss/TodoGC/blob/main/todogc.toml.example).
 
 Global options go **before** the command:
@@ -145,7 +155,9 @@ todogc --heap-max 100 --gc-mode gentle gc --dry-run
 
 Use the same database path when switching directories or managing a watcher.
 `--config` selects configuration; it does not select a database. To keep paths
-consistent across terminal sessions, set `TODOGC_DB` and `TODOGC_CONFIG` in your shell.
+consistent for a custom list, use `--db` / `--config` when installing the skill,
+or set `TODOGC_DB` and `TODOGC_CONFIG` in your shell. These are optional overrides;
+ordinary installations share the default list automatically.
 
 Configuration precedence is **CLI options > environment variables > config file >
 defaults**. Common settings are:
@@ -680,7 +692,7 @@ identity token. Every later release needs a new version; PyPI files cannot be re
 | `review.py`, `review_card.py` | Weekly statistics, snapshots, and exports. |
 | `notify.py`, `watcher.py`, `watch_service.py`, `scheduling.py` | Delivery, checks, process management, and scheduling. |
 | `config.py`, `i18n.py`, `locales/` | Configuration and English/Chinese messages. |
-| `skill_install.py`, `skills/todogc/` | Offline skill installation, fixed runtime bindings, and shared agent guidance. |
+| `paths.py`, `skill_install.py`, `skills/todogc/` | Shared CLI/Web/skill paths, offline skill installation, fixed runtime bindings, and agent guidance. |
 | `cli.py`, `webapp.py` | Terminal and optional browser interfaces. |
 
 ## License
