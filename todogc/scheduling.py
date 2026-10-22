@@ -49,3 +49,12 @@ def latest_weekly_due(now: datetime, *, weekday: int = 4, clock: str = "17:00",
         # Rebuild local time for the earlier date; subtracting 168 UTC hours breaks DST.
         due = datetime.combine(day - timedelta(days=7), when, tzinfo=zone).astimezone(timezone.utc)
     return due
+
+
+def next_weekly_due(now: datetime, *, weekday: int = 4, clock: str = "17:00",
+                    timezone_name: str = "local") -> datetime:
+    """Next occurrence, rebuilding wall-clock time across daylight-saving changes."""
+    previous = latest_weekly_due(now, weekday=weekday, clock=clock, timezone_name=timezone_name)
+    zone = None if timezone_name == "local" else ZoneInfo(timezone_name)
+    day = previous.astimezone(zone).date() + timedelta(days=7)
+    return datetime.combine(day, time.fromisoformat(clock), tzinfo=zone).astimezone(timezone.utc)

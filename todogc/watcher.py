@@ -8,11 +8,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from todogc.collector import Candidate, Collector, GCPolicy, Reason
@@ -32,6 +35,39 @@ logger = logging.getLogger(__name__)
 # watch_lock_stale_seconds. The heartbeat refreshes independently at this small granularity;
 # poll_seconds only decides how often a real liveness check actually runs.
 _HEARTBEAT_SECONDS = 30
+
+
+def public_watch_settings(config: AppConfig) -> dict[str, object]:
+    """Persist useful runtime settings without credentials or credential-bearing URLs."""
+    values = asdict(config)
+    values.pop("ntfy_token")
+    values.pop("ntfy_server")
+    return values
+
+
+def watch_error(error: Exception, config: AppConfig) -> str:
+    message = str(error)
+    try:
+        password = urlsplit(config.ntfy_server).password
+    except ValueError:
+        password = None
+    for secret in (config.ntfy_token, config.ntfy_server, password):
+        if secret:
+            message = message.replace(secret, "[redacted]")
+    return message
+
+
+def record_notification(store: Store, config: AppConfig, kind: str, *, error: Exception | None = None) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    detail = watch_error(error, config) if error is not None else ""
+    values = {"watch_last_notification": json.dumps({
+        "at": now, "kind": kind, "ok": error is None, "error": detail,
+    })}
+    if error is None:
+        values["watch_last_notification_success_at"] = now
+    else:
+        values.update(watch_last_notification_failure_at=now, watch_last_notification_error=detail)
+    store.watch_meta_set_many(values)
 
 
 def _status_of(candidate: Candidate) -> str:
@@ -264,7 +300,7 @@ class Watcher:
     st.cache_resource wrapper).
     """
 
-    def __init__(self, db_path: str, config: AppConfig) -> None:
+    def __init__(self, db_path: str, config: AppConfig, *, mode: str = "foreground", token: str | None = None) -> None:
         """Construct a watcher.
 
         Args:
@@ -287,6 +323,13 @@ class Watcher:
         )
         self._stop = threading.Event()
         self._pid = os.getpid()
+        self._token = token or uuid.uuid4().hex
+        self._mode = mode
+        self._finished = threading.Event()
+
+    @property
+    def finished(self) -> bool:
+        return self._finished.is_set()
 
     def stop(self) -> None:
         """Request the loop to exit after the next heartbeat tick ends (doesn't block waiting for the exit to complete).
@@ -296,7 +339,7 @@ class Watcher:
         """
         self._stop.set()
 
-    def run(self) -> None:
+    def run(self) -> bool:
         """Block and run the checkup loop until stop() is called.
 
         On startup, tries to acquire the single-instance advisory lock; if another watcher's
@@ -306,45 +349,83 @@ class Watcher:
         Returns:
             None
         """
-        store = Store(self._db_path)
+        try:
+            store = Store(self._db_path)
+        except Exception:
+            self._finished.set()
+            raise
+        failed = False
         try:
             now = datetime.now(timezone.utc)
             stale_after = timedelta(seconds=self._config.watch_lock_stale_seconds)
-            if not store.try_acquire_watch_lock(self._pid, now, stale_after=stale_after):
+            if not store.try_acquire_watch_lock(self._pid, now, stale_after=stale_after,
+                                                token=self._token, mode=self._mode,
+                                                settings=json.dumps(public_watch_settings(self._config))):
                 logger.warning(t("watcher.lock.already_running", lang=self._config.lang))
-                return
+                return False
+            logger.info("Watcher started: mode=%s pid=%s poll_seconds=%s", self._mode, self._pid, self._config.watch_poll_seconds)
             elapsed = self._config.watch_poll_seconds  # run once immediately at startup, don't wait a full poll cycle
             while not self._stop.is_set():
                 now = datetime.now(timezone.utc)
-                store.heartbeat_watch_lock(self._pid, now)
+                if self._requested_stop(store) or not store.heartbeat_watch_lock(self._pid, now, token=self._token):
+                    break
                 if elapsed >= self._config.watch_poll_seconds:
                     self._run_once(store, now)
                     elapsed = 0
-                interval = min(_HEARTBEAT_SECONDS, self._config.watch_poll_seconds - elapsed)
-                slept = self._stop.wait(interval)
-                if slept:
+                interval = min(_HEARTBEAT_SECONDS, self._config.watch_lock_stale_seconds / 3,
+                               self._config.watch_poll_seconds - elapsed)
+                if self._wait(store, interval):
                     break
                 elapsed += interval
+            logger.info("Watcher stopped: pid=%s", self._pid)
+            return True
+        except Exception as exc:
+            failed = True
+            store.watch_meta_set("watch_last_check_error", watch_error(exc, self._config))
+            raise
         finally:
-            store.release_watch_lock(self._pid)
-            store.close()
+            try:
+                store.release_watch_lock(self._pid, token=self._token, failed=failed)
+            finally:
+                store.close()
+                self._finished.set()
+
+    def _requested_stop(self, store: Store) -> bool:
+        return store.watch_meta_get("watch_stop_requested_token") == self._token
+
+    def _wait(self, store: Store, seconds: float) -> bool:
+        """Respond to cooperative stop requests without changing the check cadence."""
+        remaining = seconds
+        while remaining > 0:
+            if self._stop.is_set() or self._requested_stop(store) or store.watch_meta_get("watch_lock_token") != self._token:
+                return True
+            step = min(1, remaining)
+            if self._stop.wait(step):
+                return True
+            remaining -= step
+        return False
 
     def _run_once(self, store: Store, now: datetime) -> None:
         """Run one tick and send out whatever's worth pushing; a push failure only warns, it never breaks the loop."""
+        store.watch_meta_set("watch_last_check_at", now.isoformat())
         result = run_tick(store, self._config, now=now)
         lang = self._config.lang
         if result.wakeups:
-            if self._safe_send(*_snooze_message(result.wakeups, lang=lang), priority=3, tags=["alarm_clock"]):
+            if self._safe_send(*_snooze_message(result.wakeups, lang=lang), priority=3, tags=["alarm_clock"], store=store, kind="snooze"):
                 for task in result.wakeups:
                     store.acknowledge_snooze(task)
         if result.events:
-            self._safe_send(*_event_message(result, lang=lang), priority=4, tags=["skull"])
+            self._safe_send(*_event_message(result, lang=lang), priority=4, tags=["skull"], store=store, kind="candidates")
         if result.heap_alarm:
-            self._safe_send(*_heap_alarm_message(result, lang=lang), priority=5, tags=["rotating_light"])
+            self._safe_send(*_heap_alarm_message(result, lang=lang), priority=5, tags=["rotating_light"], store=store, kind="heap")
         if self._digest_due(store, now):
-            if self._safe_send(*_digest_message(result, lang=lang), priority=2, tags=["recycle"]):
+            if self._safe_send(*_digest_message(result, lang=lang), priority=2, tags=["recycle"], store=store, kind="digest"):
                 store.watch_meta_set("last_digest_at", now.isoformat())
         self._run_weekly_review(store, now)
+        store.watch_meta_set_many({"watch_last_check_finished_at": datetime.now(timezone.utc).isoformat(),
+                                   "watch_last_check_error": ""})
+        logger.info("Check completed: candidates=%s heap=%s/%s wakeups=%s",
+                    result.candidate_count, result.heap_size, result.heap_max, len(result.wakeups))
 
     def _run_weekly_review(self, store: Store, now: datetime) -> None:
         cfg = self._config
@@ -369,7 +450,7 @@ class Watcher:
         snapshot = store.saved_review(snapshot_id)
         assert snapshot is not None
         review = WeeklyReview.from_json(snapshot.payload)
-        if self._safe_send(*_weekly_review_message(review, snapshot_id, lang=cfg.lang), priority=3, tags=["calendar"]):
+        if self._safe_send(*_weekly_review_message(review, snapshot_id, lang=cfg.lang), priority=3, tags=["calendar"], store=store, kind="weekly"):
             store.watch_meta_set(key + ":sent", now.isoformat())
 
     def _digest_due(self, store: Store, now: datetime) -> bool:
@@ -379,11 +460,17 @@ class Watcher:
             return True
         return (now - datetime.fromisoformat(raw)).total_seconds() >= self._config.watch_digest_seconds
 
-    def _safe_send(self, title: str, message: str, *, priority: int, tags: list[str]) -> bool:
+    def _safe_send(self, title: str, message: str, *, priority: int, tags: list[str], store: Store, kind: str) -> bool:
         """Send a push notification; a network/server failure only logs a warning, never lets a notification take down the checkup loop."""
+        owner = store.watch_meta_get("watch_lock_token")
+        if self._stop.is_set() or self._requested_stop(store) or (owner is not None and owner != self._token):
+            return False
         try:
             self._channel.send(title, message, priority=priority, tags=tags)
+            record_notification(store, self._config, kind)
+            logger.info("Notification sent: %s", kind)
             return True
         except NotifyError as exc:
-            logger.warning(t("watcher.push.failed", lang=self._config.lang, title=title, error=exc))
+            record_notification(store, self._config, kind, error=exc)
+            logger.warning(t("watcher.push.failed", lang=self._config.lang, title=title, error=watch_error(exc, self._config)))
             return False

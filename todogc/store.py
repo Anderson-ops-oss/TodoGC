@@ -1405,14 +1405,18 @@ class Store:
         Returns:
             None
         """
-        self._conn.execute(
-            "INSERT INTO watch_meta(key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
-        self._conn.commit()
+        self.watch_meta_set_many({key: value})
 
-    def try_acquire_watch_lock(self, pid: int, now: datetime, *, stale_after: timedelta) -> bool:
+    def watch_meta_set_many(self, values: dict[str, str]) -> None:
+        with self._conn:
+            self._conn.executemany(
+                "INSERT INTO watch_meta(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                values.items(),
+            )
+
+    def try_acquire_watch_lock(self, pid: int, now: datetime, *, stale_after: timedelta,
+                               token: str = "", mode: str = "foreground", settings: str = "{}") -> bool:
         """Try to acquire the advisory lock for "this process is the only watcher for this database" (not a database-level mutex, just a convention).
 
         Succeeds in taking over when there's no lock record, or the existing lock's heartbeat
@@ -1430,16 +1434,29 @@ class Store:
             bool: True if the lock was acquired (or renewed); False if another watcher is
                 still alive and this process should back off.
         """
-        heartbeat_raw = self.watch_meta_get("watch_lock_heartbeat_at")
-        if heartbeat_raw is not None and now - self._from_iso(heartbeat_raw) < stale_after:
-            owner_raw = self.watch_meta_get("watch_lock_pid")
-            if owner_raw is not None and int(owner_raw) != pid:
-                return False
-        self.watch_meta_set("watch_lock_pid", str(pid))
-        self.watch_meta_set("watch_lock_heartbeat_at", self._to_iso(now))
-        return True
+        with self._conn:
+            if not self._conn.in_transaction:
+                self._conn.execute("BEGIN IMMEDIATE")
+            heartbeat_raw = self.watch_meta_get("watch_lock_heartbeat_at")
+            if heartbeat_raw is not None and now - self._from_iso(heartbeat_raw) < stale_after:
+                owner_raw = self.watch_meta_get("watch_lock_pid")
+                owner_token = self.watch_meta_get("watch_lock_token") or ""
+                if owner_raw is not None and (int(owner_raw) != pid or owner_token != token):
+                    return False
+            self._conn.executemany(
+                "INSERT INTO watch_meta(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                {
+                    "watch_lock_pid": str(pid), "watch_lock_token": token,
+                    "watch_lock_heartbeat_at": self._to_iso(now),
+                    "watch_owner_started_at": self._to_iso(now),
+                    "watch_owner_mode": mode, "watch_owner_settings": settings,
+                    "watch_last_exit": "",
+                }.items(),
+            )
+            return True
 
-    def heartbeat_watch_lock(self, pid: int, now: datetime) -> None:
+    def heartbeat_watch_lock(self, pid: int, now: datetime, *, token: str = "") -> bool:
         """Renew the watch lock held by this process (only takes effect if the lock actually belongs to this pid).
 
         Args:
@@ -1449,11 +1466,16 @@ class Store:
         Returns:
             None
         """
-        owner_raw = self.watch_meta_get("watch_lock_pid")
-        if owner_raw is not None and int(owner_raw) == pid:
-            self.watch_meta_set("watch_lock_heartbeat_at", self._to_iso(now))
+        with self._conn:
+            cur = self._conn.execute(
+                """UPDATE watch_meta SET value = ? WHERE key = 'watch_lock_heartbeat_at'
+                   AND EXISTS (SELECT 1 FROM watch_meta WHERE key = 'watch_lock_pid' AND value = ?)
+                   AND EXISTS (SELECT 1 FROM watch_meta WHERE key = 'watch_lock_token' AND value = ?)""",
+                (self._to_iso(now), str(pid), token),
+            )
+        return cur.rowcount == 1
 
-    def release_watch_lock(self, pid: int) -> None:
+    def release_watch_lock(self, pid: int, *, token: str = "", failed: bool = False) -> None:
         """Voluntarily release the watch lock held by this process (only takes effect if the lock actually belongs to this pid); call this on graceful shutdown.
 
         Args:
@@ -1462,9 +1484,33 @@ class Store:
         Returns:
             None
         """
-        owner_raw = self.watch_meta_get("watch_lock_pid")
-        if owner_raw is not None and int(owner_raw) == pid:
+        with self._conn:
+            if not self._conn.in_transaction:
+                self._conn.execute("BEGIN IMMEDIATE")
+            if self.watch_meta_get("watch_lock_pid") != str(pid) or (self.watch_meta_get("watch_lock_token") or "") != token:
+                return
             self._conn.execute(
-                "DELETE FROM watch_meta WHERE key IN ('watch_lock_pid', 'watch_lock_heartbeat_at')"
+                "DELETE FROM watch_meta WHERE key IN ('watch_lock_pid', 'watch_lock_token', 'watch_lock_heartbeat_at')"
             )
-            self._conn.commit()
+            self._conn.executemany(
+                "INSERT INTO watch_meta(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                {"watch_last_stopped_at": self._to_iso(self._now()),
+                 "watch_last_exit": "failed" if failed else "stopped"}.items(),
+            )
+
+    def request_watch_stop(self, token: str, *, allow_unowned: bool = False) -> bool:
+        """Address a stop request to an exact watcher instance, never a reusable PID."""
+        with self._conn:
+            if not self._conn.in_transaction:
+                self._conn.execute("BEGIN IMMEDIATE")
+            owner = self.watch_meta_get("watch_lock_token")
+            if owner != token and not (owner is None and allow_unowned):
+                return False
+            self._conn.executemany(
+                "INSERT INTO watch_meta(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                {"watch_stop_requested_token": token,
+                 "watch_stop_requested_at": self._to_iso(self._now())}.items(),
+            )
+            return True

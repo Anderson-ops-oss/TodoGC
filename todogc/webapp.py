@@ -26,6 +26,7 @@ from todogc.scheduling import local_time, parse_snooze_time
 from todogc.tree import TaskTree, build_task_tree, task_label
 from todogc.today import build_today
 from todogc.watcher import Watcher
+from todogc.watch_service import configure_watch_logging, service_status
 
 if TYPE_CHECKING:
     import streamlit as st  # pyright: ignore[reportMissingImports]
@@ -62,7 +63,8 @@ def _start_watcher(db_path: str, config: AppConfig) -> Watcher:
         Watcher: the watcher, already started (its daemon thread is running); it terminates
             along with the streamlit subprocess, no manual stop needed.
     """
-    watcher = Watcher(db_path, config)
+    configure_watch_logging(db_path)
+    watcher = Watcher(db_path, config, mode="web")
     threading.Thread(target=watcher.run, name="todogc-watch", daemon=True).start()
     return watcher
 
@@ -1074,12 +1076,12 @@ def main() -> None:
             )
             st.caption(_t("webapp.sidebar.db_caption", lang=lang, db=_db_path()))
             if cfg.ntfy_enabled:
-                _start_watcher(_db_path(), cfg)
+                web_watcher = _start_watcher(_db_path(), cfg)
+                status = service_status(_db_path(), cfg)
+                state = "starting" if status["state"] == "stopped" and not web_watcher.finished else status["state"]
                 st.caption(
-                    _t(
-                        "webapp.sidebar.watcher_running", lang=lang,
-                        poll_seconds=cfg.watch_poll_seconds, topic=cfg.ntfy_topic,
-                    )
+                    _t("service.start.result", lang=lang, state=_t(f"service.state.{state}", lang=lang),
+                       mode=status["mode"] or "web", pid=status["pid"] or "-")
                 )
             else:
                 st.caption(_t("webapp.sidebar.watcher_disabled", lang=lang))

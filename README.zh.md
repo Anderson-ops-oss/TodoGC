@@ -187,21 +187,37 @@ heap_threshold_pct = 80          # 堆占用告警阈值(%)
 复活回到存活会静默清空去抖记录(这是好消息，不推送，但下次再堕落会被当"新"跃迁重新提醒)。
 另外每隔 `digest_seconds` 会发一条心跳摘要，证明 watcher 还活着，不必疑神疑鬼。
 
-`todogc watch` 起一个单实例建议性锁——如果你已经在跑 `todogc web`(且配了
-`notify.ntfy_enabled`)，它会在 web 服务进程里自动带一条同款后台线程，此时再手动开
-`todogc watch` 会检测到锁被占用、自动放弃，不会对同一份跃迁重复推送两遍。
+前台、后台和网页内的 watcher 共用原子的单实例锁与心跳。已有实例运行时，`watch start`
+会显示它的 PID 和运行模式，不启动重复检查。旧实例也不能续约或释放替代实例的锁。
 
-`watch` 前台运行会占住当前 shell。放到后台并重定向输出后，同一个 terminal 可以继续添加任务：
+### 管理定时检查
+
+`todogc watch` 保留前台运行方式，Ctrl-C 停止。后台模式可让同一个 terminal 继续添加任务：
 
 ```bash
-nohup todogc watch > todogc-watch.log 2>&1 < /dev/null &
+todogc watch test
+todogc watch start
+todogc watch status
 todogc add "Plan next week" --root
-jobs -l
+todogc watch logs --lines 50
+todogc watch stop
 ```
 
-两个命令使用同一数据库和配置；切换目录时可使用绝对路径。停止时用 `kill` 加上
-`jobs -l` 显示的 watcher PID。`nohup` 在关闭 terminal 后仍可运行，电脑需保持唤醒；
-跨登录或重启常驻可使用系统服务管理器。
+各命令使用同一数据库；跨目录管理时用绝对路径，例如 `todogc --db /path/tasks.db watch status`。
+后台进程保存启动时的有效配置，包含环境变量与 GC、容量参数覆盖。修改配置后先 stop 再 start。
+
+- `watch status` 显示运行模式、PID、心跳、检查时间、下次检查、每周五 17:00 的周报安排
+  （或自定义安排）、待补发回顾和通知结果。`--json` 提供机器可读输出；发送耗时会影响下次检查估计。
+- `watch test` 仅发送一条通用测试通知，不检查任务、不确认 Snooze、不生成周报、不包含任务标题。
+- `watch logs --lines N` 显示最近日志，支持轮转文件。路径为数据库旁的 `<database>.watch/watch.log`，
+  单文件最多 1 MiB，保留三个备份，目录权限私有并由 Git 忽略。
+- `watch stop` 通过实例令牌请求正常退出，不按 PID 杀进程。停止网页内检查线程时网页服务仍保留；
+  正在发送的通知可能先完成。网页显示实际状态；之后用 `watch start` 或重启网页恢复检查。
+
+status 和 logs 不创建或迁移数据库；当前配置损坏时仍可使用 status、logs、stop。
+状态和日志不保存 ntfy 凭据，完整启动配置通过私有管道传给后台进程。
+关闭终端后后台检查继续运行，电脑重启后需再次 start；登录自启（如 macOS launchd）后续单独增加。
+原有每分钟检查、Snooze 重试和周五周报规则保持一致。
 
 ## 语言
 
@@ -483,8 +499,8 @@ pytest
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # 产出 dist/todogc-0.11.0-py3-none-any.whl 与 .tar.gz
-pip install dist/todogc-0.11.0-py3-none-any.whl   # 到哪都能装
+python -m build          # 产出 dist/todogc-0.12.0-py3-none-any.whl 与 .tar.gz
+pip install dist/todogc-0.12.0-py3-none-any.whl   # 到哪都能装
 ```
 
 `dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。

@@ -23,6 +23,7 @@ htmlcov/
 # TodoGC runtime database (user data, not checked in)
 *.db
 *.db.bak
+*.watch/
 todogc.db
 
 # Editor / OS

@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 from todogc import console, report
@@ -27,6 +29,10 @@ from todogc.review_card import export_review
 from todogc.tree import format_task_tree, task_label
 from todogc.today import build_today
 from todogc.watcher import Watcher
+from todogc.watch_service import (
+    WatchServiceError, configure_watch_logging, format_service_status,
+    read_watch_logs, send_test, service_status, start_background, stop_watch,
+)
 
 HEAP_MAX = 50  # -Xmx: the max number of tasks you can carry at once, used only for GC log display.
 
@@ -604,7 +610,7 @@ def cmd_web(store: Store, args: argparse.Namespace) -> int:
     return subprocess.run(cmd, env=env).returncode
 
 
-def cmd_watch(store: Store, args: argparse.Namespace) -> int:
+def cmd_watch(store: Store | None, args: argparse.Namespace) -> int:
     """watch: scheduled checkup — polls liveness, pushes an ntfy notification on state transitions/heartbeat digests/heap-usage alerts.
 
     The Watcher opens its own independent Store connection to run its loop (unrelated to the
@@ -622,19 +628,50 @@ def cmd_watch(store: Store, args: argparse.Namespace) -> int:
         int: exit code; returns 1 if notify.ntfy_enabled isn't on / ntfy_topic isn't
             configured.
     """
-    cfg: AppConfig = args.app_config
-    if not cfg.ntfy_enabled:
-        print(_t("cli.watch.not_configured"), file=sys.stderr)
-        return 1
-    watcher = Watcher(args.db, cfg)
-    signal.signal(signal.SIGTERM, lambda signum, frame: watcher.stop())
-    print(_t("cli.watch.starting", db=args.db, poll_seconds=cfg.watch_poll_seconds))
+    cfg = replace(args.app_config, heap_max=args.heap_max, gc_mode=args.gc_policy.mode,
+                  recent_days=args.gc_policy.recent_days, max_consecutive_skips=args.gc_policy.max_skips,
+                  restore_grace_days=args.gc_policy.restore_grace_days)
     try:
-        watcher.run()
-    except KeyboardInterrupt:
-        pass
-    print(_t("cli.watch.stopped"))
-    return 0
+        if args.watch_action == "status":
+            status = service_status(args.db, cfg)
+            status["current_config_available"] = not args.watch_config_unavailable
+            if args.json:
+                print(json.dumps(status, indent=2))
+            else:
+                print(format_service_status(status))
+                if args.watch_config_unavailable:
+                    print(_t("service.config_unavailable"))
+        elif args.watch_action == "logs":
+            print(read_watch_logs(args.db, lines=args.lines) or _t("service.logs.empty"))
+        elif args.watch_action == "test":
+            send_test(args.db, cfg)
+            print(_t("service.test.sent"))
+        elif args.watch_action == "start":
+            status = start_background(args.db, cfg)
+            print(_t("service.start.result", state=_t(f"service.state.{status['state']}"),
+                     mode=status["mode"] or "-", pid=status["pid"] or "-"))
+        elif args.watch_action == "stop":
+            status = stop_watch(args.db, cfg)
+            print(_t("service.stop.done" if status["state"] in {"stopped", "failed"} else "service.stop.pending"))
+        else:
+            if not cfg.ntfy_enabled:
+                raise WatchServiceError(_t("cli.watch.not_configured"))
+            configure_watch_logging(args.db)
+            watcher = Watcher(args.db, cfg)
+            previous_handler = signal.signal(signal.SIGTERM, lambda signum, frame: watcher.stop())
+            print(_t("cli.watch.starting", db=args.db, poll_seconds=cfg.watch_poll_seconds))
+            try:
+                if not watcher.run():
+                    return 1
+            except KeyboardInterrupt:
+                pass
+            finally:
+                signal.signal(signal.SIGTERM, previous_handler)
+            print(_t("cli.watch.stopped"))
+        return 0
+    except (WatchServiceError, OSError, sqlite3.Error, subprocess.SubprocessError, ValueError) as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
+        return 1
 
 
 def cmd_graveyard(store: Store, args: argparse.Namespace) -> int:
@@ -994,6 +1031,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("watch", help=_t("cli.help.cmd_watch"))
     p.set_defaults(func=cmd_watch)
+    actions = p.add_subparsers(dest="watch_action")
+    actions.add_parser("start", help=_t("service.help.start"))
+    actions.add_parser("stop", help=_t("service.help.stop"))
+    status = actions.add_parser("status", help=_t("service.help.status"))
+    status.add_argument("--json", action="store_true", help=_t("service.help.json"))
+    actions.add_parser("test", help=_t("service.help.test"))
+    logs = actions.add_parser("logs", help=_t("service.help.logs"))
+    logs.add_argument("--lines", type=_positive_int, default=50, help=_t("service.help.lines"))
 
     p = sub.add_parser("graveyard", help=_t("cli.help.cmd_graveyard"))
     p.set_defaults(func=cmd_graveyard)
@@ -1086,7 +1131,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        cfg = load_config(args.config)
+        args.watch_config_unavailable = False
+        try:
+            cfg = load_config(args.config)
+        except ConfigError:
+            if args.cmd != "watch" or args.watch_action not in {"stop", "status", "logs"}:
+                raise
+            cfg = AppConfig()
+            args.watch_config_unavailable = True
         set_locale(args.lang or cfg.lang)  # --lang > env var/config file (already folded into cfg.lang) > default
         args.heap_max = args.heap_max if args.heap_max is not None else cfg.heap_max
         mode = getattr(args, "command_gc_mode", None) or args.gc_mode or cfg.gc_mode
@@ -1103,6 +1155,8 @@ def main(argv: list[str] | None = None) -> int:
     except (ConfigError, ValueError) as exc:
         print(_t("cli.error.config", error=exc), file=sys.stderr)
         return 2
+    if args.cmd == "watch":
+        return cmd_watch(None, args)
     store = Store(args.db)
     try:
         return args.func(store, args)

@@ -72,7 +72,12 @@ todogc capture "Explore a browser extension" # quickly record an idea in Inbox
 todogc inbox                                 # list pending ideas and review markers; read-only
 todogc heap                                  # heap map: generational layout + -Xmx usage + zombies in red (alias jmap)
 todogc web                                   # move that heap map into the browser + interaction (needs [web], see below)
-todogc watch                                 # scheduled checkup: push to ntfy on state transitions/heap alerts (needs [notify], see below)
+todogc watch                                 # foreground scheduled checkup (configure ntfy first)
+todogc watch start                           # run the same watcher in the background
+todogc watch status                          # runtime settings, checks, delivery results, weekly schedule
+todogc watch test                            # send one test notification
+todogc watch logs --lines 50                 # recent check and notification logs
+todogc watch stop                            # gracefully stop the current watcher
 todogc gc                                    # trigger collection + the Stop-the-world ceremony
 todogc gc --dry-run                          # report only, skip the ceremony
 todogc graveyard                             # epitaph wall: see what you've buried
@@ -232,25 +237,58 @@ but next time it backslides it's treated as a "new" transition again). A heartbe
 digest is also sent every `digest_seconds`, proving the watcher is still alive so you
 don't have to wonder.
 
-`todogc watch` takes an advisory single-instance lock — if you're already running
+All watcher modes take the same atomic, heartbeat-based single-instance lock. If you're already running
 `todogc web` (with `notify.ntfy_enabled` configured), it auto-starts the same
-background thread inside the web server process; manually starting `todogc watch`
-on top of that will detect the lock is held and back off, so the same transition
-never gets pushed twice.
+background thread inside the web server process. `watch start` reports the existing
+foreground, background, or Web watcher and leaves it in charge; simultaneous starts
+share one owner. A stale instance cannot renew or release a replacement's lock.
 
-`watch` runs in the foreground and occupies the current shell. To keep adding tasks
-in the **same terminal**, start it in the background with output redirected:
+### Manage the watcher
+
+`watch` keeps its foreground behavior, with Ctrl-C to stop. `watch start` detaches the
+same check loop so you can continue adding tasks in the **same terminal**:
 
 ```bash
-nohup todogc watch > todogc-watch.log 2>&1 < /dev/null &
+todogc watch test
+todogc watch start
+todogc watch status
 todogc add "Plan next week" --root
-jobs -l
+todogc watch logs --lines 50
+todogc watch stop
 ```
 
-Use the same database/config for both commands; use absolute paths if changing
-directories. Stop the watcher with `kill` followed by its PID from `jobs -l`.
-`nohup` keeps it running when the terminal closes, while the computer remains awake;
-a service manager can keep it running across logins or reboots.
+Use the same database for each command. To manage it from another directory, use an
+absolute path, such as `todogc --db /path/to/tasks.db watch status`. The background
+worker captures the effective configuration at startup, including environment and
+GC/heap command-line overrides; it uses an absolute database path. After editing
+configuration, run `watch stop`, then `watch start` to apply it. Status labels whether
+settings come from the running watcher, its last run, or the current configuration.
+
+- **`watch status`** shows the owner/mode, last heartbeat, last check started/finished,
+  expected next check, Friday 17:00 weekly schedule (or your configured schedule),
+  pending catch-up review, and notification success/failure history. `--json` is available
+  for scripts. Next-check times are estimates when a send is still in flight.
+- **`watch test`** sends exactly one generic notification and reports whether the ntfy
+  server accepted it. It does not run GC checks, acknowledge Snooze deadlines, generate
+  weekly reviews, or include task titles. The result appears in status and logs.
+- **`watch logs --lines N`** reads recent logs, including rotated files. Logs live beside
+  the database in `<database>.watch/watch.log`; each file is capped at 1 MiB, with three
+  backups. The runtime directory is private and ignored by Git.
+- **`watch stop`** requests a cooperative stop using the exact watcher's instance token.
+  It can stop the foreground loop or Web check thread without terminating the shell or
+  Web server. A send already in progress may finish first; status then reports Stopping.
+  The Web UI reports the actual owner/state. To resume after stopping its cached check
+  thread, use `watch start` or restart the Web server.
+
+Status and log inspection do not create or migrate databases. Status, logs, and stop
+remain usable if the current configuration file is broken. Saved settings and logs
+omit ntfy credentials; the complete startup configuration is passed through a private
+pipe, not command-line arguments or a persisted config snapshot.
+
+The background process continues when the terminal closes while the computer is awake.
+After a reboot, run `watch start` again. Login/startup integration (such as macOS
+launchd) is a separate future addition. Existing one-minute checks, notifications,
+Snooze retries, and Friday reviews keep the same rules.
 
 ## Language
 
@@ -639,6 +677,7 @@ todogc/
   report.py     JVM-style GC log + heap map (heap_view view model, shared by CLI/Web) + candidates + roast
   notify.py     ntfy push channel (JSON publish, zero-dep, plain urllib)
   watcher.py    scheduled-checkup core: event-driven + debounce + heartbeat digest + advisory single-instance lock
+  watch_service.py  detached lifecycle, cooperative stop, runtime status, test notifications and rotating logs
   tree.py       read-only task hierarchy, paths, grouping and legacy-cycle handling
   query.py      shared read-only search, ranges, subtree filtering and sorting
   today.py      daily plan, unfinished suggestions, wake-ups and completions
@@ -662,8 +701,8 @@ Zero core dependencies — packs into a standard wheel/sdist for direct distribu
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # produces dist/todogc-0.11.0-py3-none-any.whl and .tar.gz
-pip install dist/todogc-0.11.0-py3-none-any.whl   # install it anywhere
+python -m build          # produces dist/todogc-0.12.0-py3-none-any.whl and .tar.gz
+pip install dist/todogc-0.12.0-py3-none-any.whl   # install it anywhere
 ```
 
 `dist/`, `build/`, `*.egg-info/` are all in `.gitignore` — build artifacts aren't
