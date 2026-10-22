@@ -1,297 +1,328 @@
 # TodoGC
 
-> 一款严肃的**企业级认知内存管理中间件**。
-> ……说人话：它把你的待办清单当成程序的堆内存，用垃圾回收算法冷酷地识别并回收那些"你其实这辈子都不会做"的僵尸任务。
+一个本地任务管理工具：把未完成的工作视为内存堆，将任务关联到实际目标，安排今日行动，
+再通过垃圾回收检查失去目的或长期停滞的任务。
 
-![python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 [![CI](https://github.com/Anderson-ops-oss/TodoGC/actions/workflows/ci.yml/badge.svg)](https://github.com/Anderson-ops-oss/TodoGC/actions/workflows/ci.yml)
-![deps](https://img.shields.io/badge/dependencies-0-success)
-![人生覆盖率](https://img.shields.io/badge/%E4%BA%BA%E7%94%9F%E8%A6%86%E7%9B%96%E7%8E%87-12%25-red)
-![GC throughput](https://img.shields.io/badge/GC%20throughput-98%25-success)
+![Core dependencies](https://img.shields.io/badge/core%20dependencies-0-success)
 
-普通 todo app 帮你**添加**任务；TodoGC 帮你**诚实地删除**任务。
+提供终端 CLI、可选本地网页、Inbox、多层子任务、Today、定时 Snooze、完成历史、周报分享卡，
+以及可选 ntfy 提醒。数据保存在本地 SQLite 数据库中。
+**英文是主要语言**；本页是可选中文文档，主文档见 [English README](README.md)。
 
-一个任务如果长期和你的真实目标"不可达"（从没推进、反复推迟），就会被标记为垃圾，触发一场逼你二选一的回收仪式——**复活**它，或者承认你这辈子不会做。
+## 安装与快速开始
 
-*([English README here](README.md))*
+需要 **Python 3.10+**。在项目目录中执行：
 
----
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
 
-## 核心隐喻
+上述激活命令适用于 macOS/Linux；Windows PowerShell 使用 `.venv\Scripts\Activate.ps1`。
+核心仅使用 Python 标准库。按需在同一环境安装扩展：
 
-| 内存管理 | 映射到你的待办 |
+| 功能 | 从当前项目安装 |
 |---|---|
-| 堆对象 | 一条待办 |
-| GC roots | 你声明的活跃目标 |
-| 可达性 | 任务还连不连得到某个目标 |
-| 引用计数 | 你真推进/编辑它的次数（光看不算） |
-| 循环引用 | 两个任务互相当理由、却都不连目标——最阴险的僵尸 |
-| 分代 / 晋升 | 逃过多轮回收的老赖，晋升老年代并被打脸 |
-| Metaspace | "变得更自律"这类关于任务的元任务，常驻不回收 |
-| Stop-the-world | 回收仪式：世界暂停，逐个处置僵尸 |
+| 终端彩色输出 | `python -m pip install -e ".[color]"` |
+| 网页及 PNG 导出 | `python -m pip install -e ".[web]"` |
+| 仅 PNG 导出 | `python -m pip install -e ".[export]"` |
 
-## 安装
+创建目标及两层子任务：
 
 ```bash
-pip install -e .            # 开发模式；装完 `todogc` 就是一条真命令
-pip install -e ".[color]"   # 想要彩色输出(rich 表格 + GC 日志高亮)就带上 color
-pip install -e ".[web]"     # 想要 Web 端(Streamlit 堆内存图 + add/gc/restore 交互)就带上 web
+todogc add "Release TodoGC" --root            # 新数据库中的 #1
+todogc add "Write the user guide" --root-id 1 # #2
+todogc add "Check the examples" --root-id 2   # #3
+todogc focus 3
+todogc today
+todogc progress 3 "Checked the quick start"
+todogc done 3 "Examples verified"
+todogc tree --show-completed
 ```
 
-核心**零运行时依赖**，只用标准库；`rich`(彩色)与 `streamlit`(Web 端)都是可选增强——没装 rich 自动回退纯文本，没装 streamlit 也不影响 CLI 与测试。需要 Python 3.10+。
+请使用命令实际返回的编号。本文后续示例是单项操作示范，不是可以依次套用到现有数据库的脚本。
+普通任务管理不需要配置文件或通知服务；英文输出也不需要语言参数。
 
-## 用法
+## 使用指南
+
+命令、示例和相关规则集中在本节：
+
+| 我想…… | 对应章节 |
+|---|---|
+| 选择数据库、配置文件或语言 | [数据与配置](#数据与配置) |
+| 新建、编辑、完成或重新打开任务 | [任务生命周期](#任务生命周期) |
+| 整理目标和多层子任务 | [任务树与关联](#任务树与关联) |
+| 先记下一个尚未确定的想法 | [Inbox](#inbox) |
+| 安排今天做什么 | [Today](#today) |
+| 查找和筛选任务 | [搜索与筛选](#搜索与筛选) |
+| 暂停任务直到指定时间 | [Snooze 与 defer](#snooze-与-defer) |
+| 诊断、回收或恢复任务 | [GC 与恢复](#gc-与恢复) |
+| 查看完成统计、导出分享图 | [每周回顾](#每周回顾) |
+| 配置提醒、管理后台进程 | [Watch 与通知](#watch-与通知) |
+| 使用浏览器管理任务 | [网页端](#网页端) |
+
+### 数据与配置
+
+默认使用**当前目录的 `todogc.db` 和 `todogc.toml`**。数据库首次使用时创建，配置文件可选。
+完整配置模板见 [todogc.toml.example](todogc.toml.example)。
+
+全局选项放在**子命令前面**：
 
 ```bash
-todogc add "这季度上线支付重构" --root     # #1 声明一个活跃目标(GC root)
-todogc add "写对账模块" --root-id 1         # #2 挂到目标 #1 下
-todogc progress 2 "完成核心逻辑"            # 真推进(+1 refcount)
-todogc done 2 "已发布"                     # 标记完成并释放容量
-todogc completed                            # 查看已完成任务和完成时间
-todogc reopen 2                             # 重新打开已完成任务
-
-todogc add "学 Rust"                         # #3 ┐ 互相担保的一对僵尸
-todogc add "用 Rust 重写博客"                # #4 ┘
-todogc dep 3 4                               # #3 的理由是 #4
-todogc dep 4 3                               # #4 的理由是 #3 —— 成环
-
-todogc ls                                    # 看看你的堆
-todogc tree                                  # 终端任务树，不增加 view
-todogc tree --show-completed                 # 同时显示已完成节点
-todogc capture "探索浏览器扩展"              # 快速记录到想法收件箱
-todogc inbox                                 # 查看待整理想法及停留时间
-todogc heap                                  # 堆内存图：分代分布 + -Xmx 占用 + 僵尸标红(别名 jmap)
-todogc web                                   # 把这张堆图搬进浏览器 + 交互(需 [web]，见下)
-todogc watch                                 # 定时体检：状态跃迁/堆占用告警时推 ntfy(需 [notify]，见下)
-todogc --lang zh gc                          # 可选中文输出，默认英文
-todogc gc                                    # 触发回收 + Stop-the-world 仪式
-todogc gc --dry-run                          # 只出报告，不进仪式
-todogc graveyard                             # 悼词墙：看看你都埋了什么
-todogc restore 3                             # 手滑了？从垃圾桶捞回来
-todogc show 3                                # 详情 + 泄漏指标
-todogc history 3                             # append-only 事件时间线
-todogc edit 3 "学完 Rust 第一章" --ref weak   # 编辑 + strong/soft/weak
-todogc link 3 1                              # 重连父目标；--off 解除
-todogc doctor                                # Cognitive Leak Detector
-todogc stats --since 30d                     # GC 历史统计
+todogc --db /absolute/path/tasks.db today
+todogc --config /absolute/path/todogc.toml --db /absolute/path/tasks.db watch status
+todogc --heap-max 100 --gc-mode gentle gc --dry-run
 ```
 
-### 一次 `gc --dry-run` 长这样
+切换目录或管理 Watch 时应指向同一数据库。`--config` 只选择配置文件，不选择数据库；
+可在 shell 中设置 `TODOGC_DB` 和 `TODOGC_CONFIG`，让不同会话使用固定路径。
 
-```
-[运行 0d00h][info][gc] GC(0) Pause Young (Allocation Failure)
-  活跃堆         : 4 -> 2 tasks (上限 50)
-  本轮回收       : 2 zombies   →  释放认知内存 50.0%
-  reference cycle: 1 处  「学 Rust」 ⇄ 「用 Rust 重写博客」
-  [Times: 焦虑=0.2h  自责=0.1h  实际推进=0.0h]
+优先级为 **CLI 参数 > 环境变量 > 配置文件 > 默认值**。常用配置如下：
 
-━━ 回收候选清单 (2 项) ━━━━━━━━━━━━━━━━
-[reference cycle #0] 互相担保，谁都不连 root：
-   ⇄ #3 学 Rust
-   ⇄ #4 用 Rust 重写博客
-```
+| TOML 配置项 | 默认值 | 环境变量 |
+|---|---|---|
+| `[heap] max` | `50` | `TODOGC_HEAP_MAX` |
+| `[gc] mode` | `"normal"` | `TODOGC_GC_MODE` |
+| `[gc] recent_days` | `30` | `TODOGC_RECENT_DAYS` |
+| `[gc] max_consecutive_skips` | `5` | `TODOGC_MAX_SKIPS` |
+| `[gc] restore_grace_days` | `7` | `TODOGC_RESTORE_GRACE_DAYS` |
+| `[i18n] lang` | `"en"` | `TODOGC_LANG` |
 
-### 一次 `heap`（别名 `jmap`）长这样
+需要中文时，可用 `--lang zh`、`TODOGC_LANG=zh` 或 `[i18n] lang = "zh"`。
+网页的语言选择只作用于当前会话，初始值来自配置。Watch 推送使用配置或 `TODOGC_LANG` 中的
+语言；网页选择器与 CLI `--lang` 不改变推送语言。帮助文本读取 `--lang` 和环境变量，
+不会提前读取配置文件中的语言。部分可选中文诊断字段仍为英文；用户标题和备注不做翻译。
 
-```
-━━ 堆内存快照 · jmap -heap ━━━━━━━━━━━━━━━━
-  -Xmx 占用: 5 / 50 obj  [██░░░░░░░░░░░░░░░░░░] 10.0%   (Metaspace 不计)
+使用任务存储的命令会在打开数据库时自动迁移，并提前生成 `.bak`；Watch status 和 logs
+不会创建或迁移数据库。数据库及本地通知凭据应保留在本地，不要提交到 Git。
 
-  ┌ Eden · 新生代 (5)
-  │   ★ #1 上线支付重构
-  │     #2 写对账模块
-  │   ☠ #3 学 Rust  (cycle #0)
-  │   ☠ #4 用 Rust 重写博客  (cycle #0)
-  │   ☠ #5 孤儿任务  (unreachable)
-  ├ Survivor · 幸存区 (0)
-  │   (空)
-  ├ Old · 老年代 (0)
-  │   (空)
-  ├ Metaspace · 元空间 (1)
-  │   ⊛ #6 变得更自律
-  └──────────────
-  图例: ★ root · ☠ 回收候选(僵尸) · ⊛ 元任务
-```
-
-装了 `rich` 时：僵尸行整行标红、`★` root 描金、`-Xmx` 占用条上色；`jmap` 是它的别名（致敬 JDK 那个真的会打印堆内存图的命令）。
-
-### Web 端（Streamlit）长这样
+### 任务生命周期
 
 ```bash
-pip install -e ".[web]"
-todogc web                 # 起本地服务、浏览器打开(--port 改端口)
-```
-
-同一套内核、同一张堆图，只是从终端搬进浏览器：
-
-- **-Xmx 占用条** + 四代卡片（Eden / Survivor / Old / Metaspace）：僵尸行**标红**、`★` root 描金、`⊛` 元任务品红——配色语义与 CLI 一致
-- **Stop-the-world 仪式** 直接在页面点：逐个僵尸选「复活 / 回收 / 跳过」、填 `finalize()` 遗言，一键执行——走的还是 CLI 那套 `run_ceremony`（`finalize` 只调一次、复活会晋升分代）
-- 侧栏 **add**（含 -Xmx 满则 Allocation Failure 拒绝分配）、**墓园**一键 `restore`
-- **任务详情**支持 edit/progress/snooze/link/dep 与事件时间线；**Leak Inspector** 和 GC 历史与 CLI 同源
-
-Web 端是可选的：没装 `streamlit`，`todogc web` 只会友好提示去装，绝不影响其它命令；浏览器里的自动刷新不算「查看」（不虚增 view 埋点）。
-
-## 策略、引用强度与认知泄漏诊断
-
-项目目录可放一个 `todogc.toml`（完整样例见 `todogc.toml.example`）：
-
-```toml
-[gc]
-mode = "normal"                 # gentle / normal / aggressive
-recent_days = 30
-max_consecutive_skips = 5
-restore_grace_days = 7
-
-[heap]
-max = 50
-```
-
-优先级为 CLI 参数 > 环境变量 > `todogc.toml` > 默认值。`strong` 可达即保留；
-`soft` 使用常规活跃度规则；`weak` 必须在时间窗内有真推进。推进、编辑、复活和恢复会
-清零“连续推迟”，但历史累计推迟仍保留用于审计；恢复任务默认享有 7 天宽限期。
-
-数据库会自动从旧版迁移；迁移文件库前先生成同目录 `.bak`。真实执行的 GC
-写入审计历史，`heap` 与 `gc --dry-run` 始终只读。
-
-## 定时体检(ntfy 推送)
-
-`todogc watch` 让判活不用你手动敲命令去看——按 `todogc.toml` 的 `[notify]`/`[watch]` 配置
-（完整字段见 `todogc.toml.example`），轮询判活、状态跃迁时推 [ntfy](https://ntfy.sh) 通知：
-
-```toml
-[notify]
-ntfy_enabled = true
-ntfy_topic = "你的-topic"        # 建议自建一个不容易被猜到的 topic 名；受保护 topic 才需要 ntfy_token
-
-[watch]
-poll_seconds = 60                # 默认每分钟检查一次
-weekly_review_enabled = true
-weekly_review_day = "friday"
-weekly_review_time = "17:00"
-weekly_review_timezone = "local" # 或 Asia/Tokyo 等 IANA 时区
-digest_seconds = 86400           # 没有新事件也定期报个平安
-remind_days = 7                  # 候选状态没变时，隔多少天再提醒一次
-heap_threshold_pct = 80          # 堆占用告警阈值(%)
-```
-
-推送是**事件驱动**的，不是心跳污染——参考真实 JVM 只在实际发生一次 GC 时才打日志，
-`todogc watch` 只在下列"跃迁"发生时才推(候选数量不变、状态没变一律静默)：
-
-- 每周回顾到期，默认每周五 17:00，使用配置的时区。
-- Snooze 到期后提醒恢复任务。
-- 任务从存活跃迁为候选(新僵尸 / 新孤儿 / 新循环引用)。
-- 候选状态本身发生变化(比如从 stale 变成陷入循环引用)。
-- 同一候选状态持续太久(超过 `remind_days` 没处理)，复议期到，再提醒一次。
-- 堆占用**新跨过** `heap_threshold_pct` 那一刻(持续高位不会重复告警)。
-
-复活回到存活会静默清空去抖记录(这是好消息，不推送，但下次再堕落会被当"新"跃迁重新提醒)。
-另外每隔 `digest_seconds` 会发一条心跳摘要，证明 watcher 还活着，不必疑神疑鬼。
-
-前台、后台和网页内的 watcher 共用原子的单实例锁与心跳。已有实例运行时，`watch start`
-会显示它的 PID 和运行模式，不启动重复检查。旧实例也不能续约或释放替代实例的锁。
-
-### 管理定时检查
-
-`todogc watch` 保留前台运行方式，Ctrl-C 停止。后台模式可让同一个 terminal 继续添加任务：
-
-```bash
-todogc watch test
-todogc watch start
-todogc watch status
-todogc add "Plan next week" --root
-todogc watch logs --lines 50
-todogc watch stop
-```
-
-各命令使用同一数据库；跨目录管理时用绝对路径，例如 `todogc --db /path/tasks.db watch status`。
-后台进程保存启动时的有效配置，包含环境变量与 GC、容量参数覆盖。修改配置后先 stop 再 start。
-
-- `watch status` 显示运行模式、PID、心跳、检查时间、下次检查、每周五 17:00 的周报安排
-  （或自定义安排）、待补发回顾和通知结果。`--json` 提供机器可读输出；发送耗时会影响下次检查估计。
-- `watch test` 仅发送一条通用测试通知，不检查任务、不确认 Snooze、不生成周报、不包含任务标题。
-- `watch logs --lines N` 显示最近日志，支持轮转文件。路径为数据库旁的 `<database>.watch/watch.log`，
-  单文件最多 1 MiB，保留三个备份，目录权限私有并由 Git 忽略。
-- `watch stop` 通过实例令牌请求正常退出，不按 PID 杀进程。停止网页内检查线程时网页服务仍保留；
-  正在发送的通知可能先完成。网页显示实际状态；之后用 `watch start` 或重启网页恢复检查。
-
-status 和 logs 不创建或迁移数据库；当前配置损坏时仍可使用 status、logs、stop。
-状态和日志不保存 ntfy 凭据，完整启动配置通过私有管道传给后台进程。
-关闭终端后后台检查继续运行，电脑重启后需再次 start；登录自启（如 macOS launchd）后续单独增加。
-原有每分钟检查、Snooze 重试和周五周报规则保持一致。
-
-## 语言
-
-默认输出语言是**英文**；中文作为可选语言，三种途径切换，优先级从高到低(`--lang` >
-环境变量 > 配置文件 > 默认值)：
-
-```bash
-todogc --lang zh gc                  # 1) 命令行参数，只影响这一次调用
-TODOGC_LANG=zh todogc gc             # 2) 环境变量
-```
-
-```toml
-[i18n]
-lang = "zh"                          # 3) todogc.toml 里的持久化默认值
-```
-
-`todogc --help` 本身的文案也会跟着 `--lang`/环境变量切换；但如果只在配置文件里设置了
-语言、没传 `--lang` 也没设环境变量，`--help` 仍显示默认语言(读配置文件前需要先解析出
-`--config` 参数，这一步做不到"先读配置再决定 help 用什么语言")，命令实际执行的输出
-则会正确地跟着配置文件走。
-
-Web 端(`todogc web`)不读上面这套——它有自己的**按浏览器 session** 的语言切换器(侧栏
-顶部的 `Language` 下拉框)，默认值取自 `todogc.toml` 的 `[i18n] lang`，但切换只
-影响当前 session，不会写回配置文件、也不会影响其他人同时打开的页面。后台 `todogc watch`
-推送用的语言只认 `[i18n] lang`(或 `TODOGC_LANG`)，跟 Web 端 UI 显示语言是两回事——这样
-多人同时开着 Web 端也不会互相改到别人的推送语言。
-
-> 英文是主要语言，报表、分代名称、空状态和语言选择器均默认使用英文。中文是可选扩展；
-> 选择中文后，部分诊断和统计字段仍使用英文。用户输入的标题与备注保留原语言。
-
-## 完成与重新打开任务
-
-`done` 表示成功完成，`collect` 表示决定放弃。两者都会退出活跃堆，但已完成任务进入
-**Completed**，不会进入墓园；完成时间与推进历史会保留。
-
-```bash
-todogc done 2 "文档已发布"
+todogc add "Publish the guide" --root-id 1
+todogc progress 2 "First draft ready"
+todogc edit 2 "Publish the revised guide"
+todogc edit 2 --ref weak
+todogc show 2
+todogc history 2 --limit 10
+todogc done 2 "Published"
 todogc completed
-todogc ls --state done
 todogc reopen 2
-todogc reopen 2 --root-id 3
+todogc reopen 2 --root-id 1
 ```
 
-普通 `ls` 只展示收件箱以外的活跃任务，也只为这些任务增加 view；`inbox` 单独列出待整理想法。
-已完成任务不参与 GC、doctor 或 watch
-检查，需重新打开后才能继续推进、编辑或推迟。重新打开保留分代、Root 身份和历史，并提供
-默认 7 天宽限期；它会检查容量，也不会自动重新打开子任务。
+| 命令 | 含义 |
+|---|---|
+| `add` | 创建任务，网页称为 **Allocate task**。 |
+| `progress` | 记录一次实际推进及可选备注，不代表完成。 |
+| `edit` | 修改标题或引用强度，也计入推进指标。 |
+| `show` | 查看当前状态、父任务、分代及推进、浏览、推迟计数。 |
+| `history` | 查看只追加、不覆盖的事件与备注。 |
+| `done` | 标记成功完成，释放容量。 |
+| `completed` | 列出已完成任务及完成时间。 |
+| `reopen` | 重新打开已完成任务，保留历史。 |
 
-父任务仍有未完成后代时，`done` 会列出它们并拒绝修改。可以逐个完成、重新关联到其他目标，
-或明确选择一起完成：
+已完成任务不在默认列表中，也不参加 GC 检查；需要先重新打开才能编辑、推进或 Snooze。
+目标和元任务同样可以完成。成功完成进入 **Completed**，放弃或回收进入 **graveyard**。
+
+父任务仍有未完成后代时，单独完成会被拒绝。可以先完成或移动后代，或明确一起完成整棵子树：
 
 ```bash
 todogc done 1 --with-subtasks
 ```
 
-网页端对应 **Mark as done**、包含未完成子任务的勾选项，以及 **Completed / Reopen**。
-完成最后一个子任务不会自动完成父目标。
+该选项涵盖所有层级的未完成后代。完成最后一个子任务不会自动完成父任务。
+重新打开只影响指定任务，保留 Root 身份和分代，并获得配置的恢复宽限期。
+原父任务不可用时，先重新打开父任务，或通过 `--root-id` 指定其他活跃父任务。
 
-## 每周回顾与分享卡
+容量上限默认是 50 个未完成的非元任务，包括 Inbox 和 Snooze。
+`add`、`capture`、`reopen`、`restore` 支持 `--force` 明确超配，网页称为 **Force over-allocate**。
+完成或回收任务会释放容量。
 
-CLI 使用 `review` 查看完成与清理统计；网页在侧栏选择 **Weekly review**，选择周和时区，
-最多勾选三个完成项作为亮点，预览并下载 PNG/SVG，或用 **Save snapshot** 固定数据和亮点。
-分享卡保持英文，默认只展示数字，选择亮点后才展示任务标题。
-
-<img src="docs/weekly-review-example.png" alt="使用示例数据生成的 TodoGC 每周回顾卡" width="430">
-
-*使用示例数据生成的分享卡。*
+### 任务树与关联
 
 ```bash
-todogc review --week this
+todogc add "Ship the release" --root
+todogc add "Prepare documentation" --root-id 1
+todogc add "Proofread examples" --root-id 2
+todogc tree
+todogc tree --show-completed --show-snoozed
+todogc link 3 1                      # 将 #3 移到 #1 下
+todogc link 3 --off                  # 解除父任务关联
+todogc root 2                       # 将 #2 标记为活跃目标
+todogc root 2 --off                  # 取消目标身份
+```
+
+`--root` 声明一个活跃目标，即 **GC root**。`--root-id` 实际选择的是直接父任务，
+因此子任务下面也可以继续添加子任务；系统拒绝父子循环。
+两项都不指定也能创建任务，它会进入 **Unlinked**，但可能因无法从活跃目标到达而成为 GC 候选。
+尚未决定归属的想法更适合使用 `capture`。
+
+任务树仅使用父子关联，顶层按 Inbox、Goals、Unlinked、Meta-tasks 分组。
+已完成和休眠任务默认隐藏；必要时保留隐藏父任务作为可见子任务的路径。浏览任务树不增加 view。
+
+另有两种独立于树层级的高级用法：
+
+```bash
+todogc dep 2 3                      # 添加 #2 指向 #3 的理由/引用边
+todogc dep 2 3 --remove
+todogc add "Review how I plan work" --meta
+```
+
+`dep` 影响 GC 可达性和引用环检测，不会移动树节点、加入 Today 或强制执行顺序。
+元任务位于 **Metaspace**，不占普通容量，也不参与普通 GC 回收。
+引用强度与分代规则见 [GC 工作原理](#gc-工作原理)。
+
+### Inbox
+
+先捕获想法，稍后再决定是否投入：
+
+```bash
+todogc capture "Explore a browser extension"
+todogc inbox
+todogc inbox --move 7                # 明确移入已有的独立未关联任务
+```
+
+使用实际编号，选择以下一种处理方式：
+
+```bash
+todogc link 7 1                      # 归入父任务，移出 Inbox
+todogc root 7                        # 转为目标，移出 Inbox
+todogc done 7                        # 直接完成
+todogc discard 7 "Not pursuing it"   # 放弃，进入墓园
+```
+
+待整理想法占容量，但不参加 GC 和泄漏诊断。停留满 7 天显示 **Needs review**，不会自动删除。
+需要先整理才能作为父任务或加入 Today。普通 Unlinked 任务不会自动进入 Inbox。
+
+放弃后使用 `restore`、完成后使用 `reopen`，都会返回原 Inbox，保留历史并重置待整理计时；
+明确指定 `--root-id` 则转为该父任务下的普通任务。捕获、查看及整理不增加 view 或推进次数。
+
+### Today
+
+```bash
+todogc focus 2                              # 追加单个任务
+todogc focus 1 --with-subtasks              # 包括各层可执行后代
+todogc focus 4 --position 1                 # 放到第一位，可用于重排
+todogc focus 1 --with-subtasks --position 1  # 整组移动
+todogc today
+todogc unfocus 4                            # 移除计划项或忽略建议
+```
+
+Today 按本机**本地日期**保存有序计划，终端与网页共享，重启后保留。
+目标和子任务均可选择；Inbox 需要先整理，休眠任务需要先唤醒。
+
+`focus ID` 只选择指定任务。`--with-subtasks` 遍历所有层级的父子关联，跳过已完成、已回收、
+Inbox 和仍休眠的后代；休眠父任务下未休眠的子任务仍可加入。起始任务本身必须可执行。
+不跟随理由边。新选择按父任务在前的顺序追加，已选择项保持原位且不重复；
+加 `--position N` 会把可执行分支作为整体移动到剩余选择中的指定位置。
+
+跨过午夜后开始新计划，之前未完成的选择和今天 Snooze 到期的任务只作为**建议**，
+需要显式 `focus` 才进入计划。`unfocus` 可忽略建议，直到重新选择。
+已完成或变得不可执行的计划项仍会在当天保留；**Completed today** 也包含计划外完成项。
+
+安排计划不增加浏览、推进、推迟或分代年龄，也不提供 GC 保护。实际工作用 `progress`、`done` 记录。
+
+### 搜索与筛选
+
+```bash
+todogc ls
+todogc ls -q "write" --root-id 1 --sort newest --limit 10
+todogc ls --scope inbox
+todogc ls --scope snoozed
+todogc ls --state done
+todogc ls --state candidate
+todogc search "release"
+todogc search "feedback" --notes --scope active
+todogc search "guide" --scope done --sort title
+```
+
+`ls` 默认列出 Inbox 以外、未休眠的未完成任务；`search` 默认覆盖**所有状态**，包含已完成和已回收。
+共享选项如下：
+
+| 选项 | 含义 |
+|---|---|
+| `-q TEXT` / `--search TEXT` | `ls` 的标题关键词；`search` 直接接关键词参数。 |
+| `--notes` | 同时匹配历史备注。 |
+| `--root-id ID` | 指定任务自身及所有层级的父子后代。 |
+| `--scope` | `active`、`inbox`、`snoozed`、`done`、`collected`、`all`。 |
+| `--state` | 与 scope 二选一：`live`、`candidate`、`done`、`collected`；candidate 动态计算当前 GC 候选。 |
+| `--sort` | `id`（默认）、`newest`、`oldest`、`title`、`updated`；updated 忽略浏览事件。 |
+| `--limit N` | 筛选、排序之后限制条数。 |
+
+关键词为不区分大小写的字面子串，`%`、`_`、引号不是通配符。
+active 排除 Inbox 和休眠任务；inbox 只含未休眠的待整理想法，休眠想法用 snoozed 查找。
+
+`search` 只读。普通 `ls` 只为实际显示的结果增加 view，默认列表不会给已完成任务增加 view。
+动态候选列表、`show`、`history`、`tree`、`today` 和网页浏览不增加 view。
+浏览不计入推进，也不能让任务保持存活。
+
+### Snooze 与 defer
+
+```bash
+todogc snooze 4 --for 2h
+todogc snooze 4 --for 3d --note "Waiting for feedback"
+todogc snooze 4 --until "2030-10-25 09:00"
+todogc snooze 1 --for 1w --with-subtasks
+todogc snoozed
+todogc unsnooze 4
+todogc unsnooze 1 --with-subtasks
+todogc defer 4 "Postponed without a return date"
+```
+
+Snooze 隐藏任务至未来时间，保留父子关联、Root 身份、分代和容量占用，期间受 GC 与泄漏检查保护。
+不增加 skip 或 progress。`--with-subtasks` 同时休眠未完成后代，否则子任务保留自己的安排。
+
+时长支持 `m/h/d/w`，`1d` 为 24 小时。日期默认本地时区，也可用
+`2030-10-25T09:00+09:00` 明确偏移，数据库存 UTC。请把示例日期替换为未来时间。
+再次 `snooze` 改期，`unsnooze` 提前唤醒。
+
+到期后，下次命令或网页刷新会重新显示任务，不依赖后台进程。
+唤醒提供固定 7 天 GC 宽限期，从预定时间计算；提前唤醒则从操作时刻计算。完成或放弃会取消计划。
+主动推送到期提醒需要配置 [Watch](#watch-与通知)。
+
+`defer` 仅记录一次推迟，不隐藏任务、不安排返回时间；多次推迟可能让任务成为 GC 候选。
+真正做了工作应使用 `progress`。
+
+### GC 与恢复
+
+| 命令 | 用途 | 是否改变任务状态 |
+|---|---|---|
+| `heap` / `jmap` | 查看分代布局、容量和候选标记。 | 否 |
+| `doctor` | 诊断认知泄漏，也审计常驻目标和元任务。 | 否 |
+| `gc --dry-run` | 查看 GC 报告和拟回收列表。 | 否 |
+| `gc` | 查看同样的报告，再逐个决定如何处理。 | 取决于选择 |
+| `stats --since 30d` | 查看最近 30 天记录的 GC 次数和结果。 | 否 |
+
+```bash
+todogc heap
+todogc doctor
+todogc gc --dry-run
+todogc gc --mode gentle
+todogc stats --since 30d
+todogc graveyard
+todogc restore 4 --root-id 1
+```
+
+回收仪式提供 **revive / collect / skip**。revive 保留候选并增加分代年龄；collect 回收到墓园并可留备注；
+skip 暂不解决。实际 GC 写入审计记录，dry-run 不写。Watch 只检查和提醒，不会替你执行回收仪式。
+
+`graveyard` 列出回收或放弃的任务与备注。`restore 4 --root-id 1` 将墓园中的 #4 恢复到活跃父任务 #1 下，
+保留历史并获得配置的宽限期。已完成工作用 `reopen`。
+`gc --full` 只改变报告的 pause 标签，使用相同回收规则。
+
+### 每周回顾
+
+`review` 统计完成与清理成果，`stats` 统计 GC 审计历史。
+
+```bash
+todogc review                               # 本周截至现在
 todogc review --week last
 todogc review --week 2026-10-19 --timezone Asia/Tokyo
 todogc review --week last --export weekly.svg
-pip install "todogc[export]"                 # 可选 PNG 依赖 Pillow
 todogc review --week last --export weekly.png
 todogc review --week last --highlight 2 --highlight 5 --export weekly.png --save
 todogc review --list
@@ -299,218 +330,197 @@ todogc review --snapshot 1 --export saved-week.svg
 todogc review --snapshot 1 --export saved-week.json
 ```
 
-周期为本地周一零点到下周一零点（不含结束时刻），可指定 IANA 时区，并正确处理夏令时。
-本周只统计生成时刻之前的记录，图片标记 **In progress**，不能选择未来周。
+SVG 无额外依赖，PNG 需 `[export]` 或 `[web]`。图片均在本地生成，尺寸为 1080 × 1350。
+分享卡使用英文，默认只有数字；`--highlight` 最多添加三个完成项标题，编号以回顾实际列出的为准。
+JSON 包含完整回顾及所有完成项标题。
 
-- 每个任务每周只计一次，归入本周首次 DONE 的日期；重开单列，不抹去完成记录。
-- 目标与其他任务分开统计，每日柱形包含两者；批量完成子树时分别计入目标与后代任务。
-  元任务和直接完成的 Inbox 想法计为非目标任务。
-- 捕获、整理、Inbox 放弃和实际 GC 回收分别按期间内的任务编号去重；GC 预演不计入回收。
-- 当前任务量记录于生成时刻，分为活跃、休眠、待整理 Inbox 三组，不用于推测历史周末结余。
-- 查看和导出不增加 view、progress 或 GC 记录；原来的 `stats` 仍统计 GC 审计历史。
+<img src="docs/weekly-review-example.png" alt="使用示例数据生成的 TodoGC 周报分享卡" width="430">
 
-亮点编号使用 `review` 实际列出的完成项，最多三个。JSON 包含完整回顾与所有完成项标题。
-快照保存在当前数据库中，固定统计、名称、时间边界、当时的任务量和所选亮点。
-新完成/放弃事件保存当时的名称、目标身份和收件箱位置；缺少历史标签的旧事件会使用当前
-元数据并在回顾中注明。保存快照后不再随任务修改而变化。
+*使用示例数据生成的分享卡。*
 
-配置 ntfy 后，watch 默认在**每周五 17:00** 自动生成快照并发送数字摘要：完成任务、
-完成目标、重开、想法整理、回收和放弃数量，以及快照编号。统计该唤醒时间所在周，
-仅包含预定 17:00 之前的事件，周五晚些时候和周末活动不会补入。任务量记录于实际生成时刻。
-标题与分享图可在网页或 CLI 打开快照后选择导出。
+一周从周一零点至下周一零点，不含结束时刻。默认本地时区，`--timezone` 可指定 IANA 时区。
+本周只统计生成时刻之前，标记 **In progress**；不接受未来周。
 
-启动时（包括首次启动）会补发最近一期已到期且未成功发送的回顾；离线多周也只补最近一期。
-失败后下次检查重试同一份快照，成功状态跨重启保留。`weekly_review_enabled = false` 可关闭，
-星期、时间、时区均可配置；环境变量统一使用 `TODOGC_WATCH_WEEKLY_REVIEW_` 前缀，
-后缀分别为 `ENABLED`、`DAY`、`TIME`、`TIMEZONE`。CLI 与网页内置 watcher 使用相同调度和数据库状态。
+- 每个任务每周只算一次，归入本周首次完成当天；重新打开单列，不抹去完成。目标与其他任务分别统计。
+- 整棵子树完成时，目标和各个完成后代分别计数；元任务和直接完成的想法算非目标任务。
+- 捕获、整理、Inbox 放弃和实际 GC 回收分别在周期内按任务编号去重；预演不算回收。
+- **Task load now** 记录生成时刻的活跃、休眠及待整理 Inbox 数量，即使查看的是历史周。
 
-SVG 无须额外依赖，PNG 使用 Pillow 与本地字体（缺少时使用 Pillow 内置字体），无需浏览器、
-API key 或外部服务；`[web]` 已包含 PNG 支持。两种图片均为 1080 × 1350，使用同一排版与真实统计。
+`--save` 将数字、标题、亮点、时区边界和当时任务量固定为数据库快照，使用 `--list`、`--snapshot ID` 查看。
+新事件保留发生时的任务标签；缺少标签的旧事件使用当前元数据并在回顾中注明，保存后固定解析结果。
+查看和导出不增加 view、progress 或 GC 次数。
 
-## 定时休眠
+### Watch 与通知
 
-Snooze 将任务隐藏至指定时间，保留父子关系、Root 身份和分代，仍占用容量。休眠期间
-不参与 GC 回收、泄漏诊断及僵尸提醒；不增加 progress、skip、view 或分代年龄。
+Watch 默认每 **60 秒**检查一次，通过 ntfy 推送。
+**`watch`、`watch start`、`watch test` 都需要先配置通知**；普通任务管理和 Snooze 到期显示不需要。
+
+**1. 如果还没有配置文件，先创建：**
 
 ```bash
-todogc snooze 4 --for 2h
-todogc snooze 4 --for 3d --note "Waiting for feedback"
-todogc snooze 4 --until "2026-10-25 09:00"
-todogc snooze 1 --for 1w --with-subtasks
-todogc snoozed
-todogc tree --show-snoozed
-todogc unsnooze 4
-todogc unsnooze 1 --with-subtasks
+cp todogc.toml.example todogc.toml
 ```
 
-时长支持 `m/h/d/w`，`1d` 为 24 小时。日期时间默认使用本地时区，可附 `+09:00` 等偏移；
-确认时显示偏移，数据库统一存 UTC，只接受未来时间。再次 snooze 会修改现有计划。
-默认 `ls`、`inbox` 和任务树隐藏休眠任务；仍有可见子任务的休眠父任务会作为路径保留，
-避免子任务丢失归属。仅指定 `--with-subtasks` 时才同时休眠未完成后代。
+**2. 修改该文件现有的 `[notify]` 和 `[watch]` 段：**
 
-网页在任务详情的 **Snooze** 中选择时长或日期时间，通过 **Show snoozed tasks** 查看，
-用 **Reschedule** 修改时间，或 **Wake now** 提前唤醒。
-到期后的下一次命令或网页刷新会自动显示任务，不依赖后台进程。唤醒后有 7 天 GC 宽限期，
-从预定唤醒时间计算；提前唤醒则从操作时间计算。完成或放弃会取消计划。
-原有 skip 历史保留，`todogc defer 4 "Not now"` 记录一次无定时的推迟；`snooze ID` 现在
-必须提供 `--for` 或 `--until`。
+```toml
+[notify]
+ntfy_enabled = true
+ntfy_server = "https://ntfy.sh"
+ntfy_topic = "replace-with-your-own-hard-to-guess-topic"
+# ntfy_token = "..."             # 受保护 topic 使用，建议通过 TODOGC_NTFY_TOKEN 设置
 
-主动提醒需要启用 ntfy 并运行 `watch` 或网页内置 watcher。默认每 **60 秒**检查一次，
-到期任务合并推送，成功后记住已发送状态，重启不重复，失败则下次重试，不会每分钟刷屏。
-已有 `watch.poll_seconds` 或 `TODOGC_WATCH_POLL_SECONDS` 配置优先；原来明确设为 `1800`
-的用户需要改成 `60` 才会使用每分钟检查。
+[watch]
+poll_seconds = 60
+digest_seconds = 86400
+remind_days = 7
+heap_threshold_pct = 80
+lock_stale_seconds = 300
+weekly_review_enabled = true
+weekly_review_day = "friday"
+weekly_review_time = "17:00"
+weekly_review_timezone = "local" # 也可指定 Asia/Tokyo 等 IANA 时区
+```
 
-## 想法收件箱
+接收端需订阅同一 ntfy 服务器上的同一 topic。只复制模板还不够：模板默认关闭推送，topic 也为空。
+不要提交 token，环境变量 `TODOGC_NTFY_TOKEN` 会覆盖文件中的值。
 
-Inbox 用于记录尚未决定归属的想法，与普通未关联任务 Unlinked 分开。旧任务不会自动移入。
+**3. 先测试，再启动后台检查：**
 
 ```bash
-todogc capture "探索一个浏览器扩展"
-todogc inbox
-todogc inbox --move 7             # 明确移入一个现有独立、未关联任务
+todogc watch test
+todogc watch start
+todogc watch status
+todogc add "Plan next week" --root  # 同一终端仍可继续使用
+todogc watch logs --lines 50
+todogc watch stop
 ```
 
-使用实际返回的任务编号，选择以下一种处理方式：
+| 命令 | 含义 |
+|---|---|
+| `watch` | 前台运行，Ctrl-C 停止。 |
+| `watch start` | 后台运行；同一数据库已有实例时显示现有实例。 |
+| `watch status` | 查看运行模式、PID、心跳、检查时间、通知结果和周报安排；`--json` 用于脚本。 |
+| `watch test` | 仅发一条通用通知，不检查任务、不确认 Snooze、不生成周报。 |
+| `watch logs --lines N` | 查看最近日志，包含轮转文件。 |
+| `watch stop` | 请求正常停止；发送中的通知可能先完成。 |
+
+测试成功表示服务器已接收，还需要确认接收端实际收到。
+出现 **Scheduled push not enabled** 时，检查当前目录、`--config` / `TODOGC_CONFIG`、
+`ntfy_enabled = true` 和非空 `ntfy_topic`。发送失败可查看 status、logs，并核对服务器、topic 及所需 token。
+
+实际推送内容包括：
+
+- Snooze 到期提醒，同次检查合并，失败下次重试。
+- 新增或变化的 GC 候选，以及相同状态持续 `remind_days` 后的提醒。
+- 容量新跨过 `heap_threshold_pct` 时的告警。
+- 每隔 `digest_seconds` 的心跳摘要，即使没有新事件。
+- 配置时刻的每周回顾，默认**每周五 17:00**。
+
+每分钟检查不等于每分钟推送。周报通知包含数字与快照编号，不附图片或任务标题；打开快照后再选择亮点并导出。
+定时回顾只包含所在周严格早于预定截止时刻的事件，周五晚些时候和周末不补入；当前任务量取实际生成时刻。
+
+启动时（包括首次启动）会补发最近一期已到期但未成功送达的回顾；错过多周也只补最近一期。
+失败重试同一快照，成功状态跨重启保留。`weekly_review_enabled = false` 关闭周报推送。
+环境变量使用 `TODOGC_WATCH_WEEKLY_REVIEW_` 前缀与 `ENABLED`、`DAY`、`TIME`、`TIMEZONE` 后缀。
+
+前台、后台和网页 watcher 对同一数据库共用一个运行实例。停止网页 watcher 只停止检查线程，
+网页继续可用；通过 `watch start` 或重启网页恢复。后台使用启动时的有效配置，修改后先 stop 再 start。
+status 会标明展示的是运行中、上次运行或当前配置。
+
+日志位于数据库旁的 `<database>.watch/watch.log`，单文件最多 1 MiB，保留三个备份。
+状态与日志不保留 ntfy 凭据；配置损坏时 status、logs、stop 仍可使用。
+关闭终端后后台仍可运行，但电脑需保持唤醒；休眠期间不检查。
+**电脑重启后需要重新 start，目前不包含登录自启。**
+
+### 网页端
+
+安装 `[web]` 后执行：
 
 ```bash
-todogc link 7 1                   # 关联到活跃父任务，移出收件箱
-todogc root 7                     # 确认为目标，移出收件箱
-todogc done 7                     # 直接完成，保留完成历史
-todogc discard 7 "暂不推进"       # 放弃并移入墓园，可恢复
+todogc web
+todogc web --port 8502
 ```
 
-网页端使用树上方的 **Capture idea**，选中想法后可整理、设为目标、完成或放弃；普通
-Unlinked 任务可通过 **Move to Inbox** 明确移入。收件箱想法需要先整理，才能作为父任务。
+网页与终端共享数据库和核心规则，侧栏按使用场景组织：
 
-每条想法显示停留天数，满 7 天标记 **Needs review**，不会自动删除。收件箱仍计入容量，
-但不参加 GC 候选判定和泄漏诊断；堆图单独显示其容量。记录、查看和整理不增加推进次数或 view。
+| 页面 | 功能 |
+|---|---|
+| **Today**（默认） | 安排今日顺序、查看建议、记录推进与完成。 |
+| **Tasks** | 任务树、搜索筛选、创建、详情、移动及已完成管理。 |
+| **Inbox** | 捕获、整理、休眠、完成、放弃和恢复想法。 |
+| **Weekly review** | 选择周与时区、预览分享卡、选择亮点、下载与保存快照。 |
+| **Maintenance** | 堆图、GC 回收仪式、泄漏诊断、GC 历史与墓园恢复。 |
 
-从墓园恢复或从已完成列表重新打开，会返回原来的收件箱，保留历史并重置待整理计时；
-明确提供 `--root-id` 则直接转为父任务下的普通任务。恢复与重新打开均检查容量，CLI 可用
-`--force` 明确超配。
+表单中的 **Allocate task** 表示创建；**Active root** 声明目标；**Meta-task** 使用 Metaspace；
+**Reference strength** 选择保留规则；**Force over-allocate** 允许超出容量。
+**Mark as done** 标记完成，包含未完成子任务需要明确勾选。详情也提供推进、编辑、Snooze、关联与历史。
 
-## 搜索与筛选
+展开树和页面刷新不增加 view，同一会话切换页面会保留搜索条件。
+启用通知后，网页会启动同样的检查线程，并与终端 watcher 共享实例所有权。
+未安装可选依赖时，`todogc web` 会提示安装方式。
+
+## GC 工作原理
+
+GC 找出**需要你审阅的候选**。Root 是活跃目标，普通任务需要能从目标经父子关联或引用边到达。
+Inbox、休眠任务、近期恢复/重新打开/复活和刚唤醒的任务另有保护规则，见使用指南。
+Root 和元任务默认常驻，由 `doctor` 单独审计。
+
+对宽限期以外、可达的普通任务：
+
+| 引用强度 | 保留条件 |
+|---|---|
+| `strong` | 可达即可。 |
+| `soft`（默认） | 近期有有效活动或推进，且连续推迟次数低于阈值。 |
+| `weak` | 近期有推进/编辑，且连续推迟次数低于阈值。 |
+
+浏览和推迟不刷新有效活动时间。默认配置对应：
+
+| 模式 | 活动窗口 | 连续推迟阈值 |
+|---|---|---|
+| `gentle` | 60 天 | 7 |
+| `normal` | 30 天 | 5 |
+| `aggressive` | 15 天 | 3 |
+
+模式基于配置值调整：gentle 窗口乘二、阈值加二；aggressive 窗口减半、阈值减二，最低均为一。
+达到阈值即不满足活动检查。strong 仍需可达；完全脱离目标的引用环可能成为循环引用候选。
+推进、编辑、复活和恢复会重置连续推迟，保留累计历史。
+
+分代表示一个候选被明确保留过多少次：
+
+| 区域 | 进入条件 |
+|---|---|
+| **Eden** | 新任务，年龄为 0。 |
+| **Survivor** | 在 GC 仪式中复活 1–14 次。 |
+| **Old** | 复活至少 15 次。 |
+| **Metaspace** | 显式元任务，不属于普通晋升序列。 |
+
+年龄只在仪式中选择复活时增加，不随时间或每次检查增加。
+完成/回收后退出活跃堆，重新打开保留分代。
+
+## 开发
+
+在项目目录运行：
 
 ```bash
-todogc ls -q "write" --root-id 1 --sort newest --limit 10
-todogc ls --scope inbox
-todogc ls --scope snoozed
-todogc search "release" --notes --scope all
-```
-
-`ls` 默认只列出非 Inbox、未休眠的活跃任务；`search` 默认搜索所有状态且不增加 view。
-关键词为不区分大小写的字面子串，`--notes` 同时搜索历史备注。`--root-id` 可以是任意任务，
-包含它自身及所有层级的子任务，不跟随理由边。`--scope` 支持 active、inbox、snoozed、done、
-collected、all，与原有 `--state` 二选一。排序支持 id、newest、oldest、title、updated，
-updated 忽略浏览事件；`--limit` 在筛选和排序后生效，`ls` 只给实际显示的任务增加 view。
-网页在 **Tasks → Search & filters** 中使用相同规则，同一会话切换页面会保留搜索条件。
-
-## 今日计划
-
-```bash
-todogc focus 2
-todogc focus 1 --with-subtasks
-todogc focus 4 --position 1
-todogc focus 1 --with-subtasks --position 1
-todogc today
-todogc progress 2 "Draft ready"
-todogc done 2 "Published"
-todogc unfocus 4
-```
-
-Today 按本机本地日期保存有序计划，终端和网页共享，重启后保留。Inbox 想法需先整理，休眠
-任务需先唤醒；Root 身份与今日选择互相独立。隔天计划重新开始，之前未完成的选择和今日
-Snooze 到期任务只作为建议，不会自动加入。忽略建议后，需手动选择才会再次安排。
-已完成或变得暂不可执行的选择会保留在当日计划中；今日完成区也包含计划外完成的任务。
-安排计划不产生 view、progress 或 defer，不改变分代或 GC 可达性，也不提供额外 GC 保护。
-
-普通 `focus ID` 只选择指定任务。`--with-subtasks` 同时选择所有层级的可执行后代，
-可从 Root 或任意子任务开始，不跟随理由边。已完成、已回收、Inbox 和仍休眠的后代会跳过；
-休眠父任务下未休眠的子任务仍可选择。指定的起始任务本身必须活跃、已整理且未休眠。
-新增选择按父任务在前的顺序追加，已在计划中的任务保留位置且不重复；配合 `--position N`
-时，会将整组可执行任务一起移动到剩余选择中的指定位置。批量操作原子提交，不增加
-view 或 progress，网页端会显示同一份计划。
-
-网页默认进入 **Today**，导航另有 **Tasks / Inbox / Weekly review / Maintenance**。
-GC 日志、回收仪式、诊断和墓园集中在 Maintenance，想法收集和整理在 Inbox。
-
-## 任务树
-
-`todogc web` 的 **Tasks → Task tree** 显示任务树和详情面板。点击箭头展开、收起多层子任务，点击节点查看路径、
-分代和操作历史；窄屏下树与详情上下排列。
-
-- **Inbox / Goals / Unlinked / Meta-tasks** 分组展示顶层任务，树的层级只使用父子关联，不使用理由边。
-- **Add subtask** 在当前活跃任务下新增子任务，自动选择新节点，并遵守容量限制。
-- **Move to** 按编号和名称选择活跃父任务，排除自己和后代；选择无父任务可解除关联。
-- **Show completed** 显示带完成标记的节点，可查看历史或重新打开。
-- 浏览、选择、展开和收起任务树都不会增加 view 计数。
-
-侧栏新增任务也可按名称选择父任务。CLI 和网页端都阻止新增父子循环；历史循环会显示警告，
-允许通过移动或解除关联来修复。父任务不可用的任务会显示在顶层，避免丢失访问入口。
-
-终端使用 `todogc tree` 查看同样的父子层级，`todogc tree --show-completed` 同时显示已完成节点；
-两个命令都不会增加 view。
-
-## 判活规则
-
-一个任务判为**存活**，当且仅当：
-
-```
-alive = 关联到某个活跃 root
-     && (最近 N 天有有效活动  ||  近 N 天有真推进)
-     && 连续推迟次数 < max_consecutive_skips
-```
-
-`DEFER` 和 `VIEW` 不刷新有效活动时间；只看不做、只往后推都不能保活。GC root 与
-Metaspace 仍默认常驻，`doctor` 会单独审计它们是否正在制造认知内存泄漏。
-
-外加一条：互相担保、却谁都不连 root 的**引用环**，整环回收——这正是引用计数 GC 抓不到、只有可达性分析能揪出来的自欺盲区。阈值都在 `GCPolicy` 里，自己调到"确实有点心虚"。
-
-## 架构
-
-```
-todogc/
-  config.py     todogc.toml + 环境变量配置（Python 3.10 仍保持零依赖）
-  i18n.py       轻量文案目录(t()/n_()) + 语言解析，零依赖替代 gettext
-  locales/      en.py / zh.py 两份文案字典(key 集合一致，由测试兜底)
-  heap.py       领域模型(Task / Touch / 分代枚举)
-  store.py      SQLite 持久化 + 自动埋点 + 判活指标
-  collector.py  可达性标记 + Tarjan 抓环 + 判活清除
-  report.py     JVM 风格 GC 日志 + 堆内存图(heap_view 视图模型，CLI/Web 共用) + 候选 + 打脸
-  notify.py     ntfy 推送渠道(JSON 发布，零依赖，纯 urllib)
-  watcher.py    定时体检核心：事件驱动 + 去抖 + 心跳摘要 + 单实例建议性锁
-  tree.py       只读任务树、路径、分组与历史循环处理
-  cli.py        命令行 + Stop-the-world 回收仪式 + todogc watch + --lang
-  webapp.py     Streamlit Web 端(任务树 + 详情 + 堆诊断 + watcher + 语言切换，可选)
-```
-
-## 测试
-
-```bash
-pip install -e ".[dev]"
-basedpyright            # Pylance/Pyright：0 errors
+python -m pip install -e ".[dev]"
 ruff check todogc tests
+basedpyright
 pytest
+python -m build
 ```
 
-## 打包
+wheel 与源码包输出到 `dist/`。核心无运行时依赖；rich、Streamlit、Pillow 均为可选扩展。
 
-核心零依赖，打成标准 wheel / sdist 直接分发（`build` 已含在 `[dev]` 里）：
-
-```bash
-pip install -e ".[dev]"
-python -m build          # 产出 dist/todogc-0.12.0-py3-none-any.whl 与 .tar.gz
-pip install dist/todogc-0.12.0-py3-none-any.whl   # 到哪都能装
-```
-
-`dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。
-
-## 路线图
-
-**后续候选（欢迎 PR）**：GitHub Issues/PR 同步、TODO/FIXME 导入、交互式引用图、
-补齐可选中文扩展中的诊断和统计字段翻译。
-
-> 说明：任务的"年龄"目前在**回收仪式里被复活时** +1（即"你逃过它几次"），而非每轮 GC 自动 +1。
+| 模块 | 职责 |
+|---|---|
+| `heap.py`、`store.py` | 模型、SQLite、事件历史与迁移。 |
+| `collector.py`、`report.py` | 可达性、引用环、GC 策略与诊断。 |
+| `tree.py`、`query.py`、`today.py` | 共享任务树、搜索与每日计划。 |
+| `review.py`、`review_card.py` | 周统计、快照与导出。 |
+| `notify.py`、`watcher.py`、`watch_service.py`、`scheduling.py` | 推送、检查、进程管理与调度。 |
+| `config.py`、`i18n.py`、`locales/` | 配置与英中文案。 |
+| `cli.py`、`webapp.py` | 终端与可选网页界面。 |
 
 ## License
 
