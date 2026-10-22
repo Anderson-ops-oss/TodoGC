@@ -2,7 +2,7 @@
 # point, and tool configuration.
 
 [build-system]
-requires = ["setuptools>=77.0"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -12,6 +12,7 @@ description = "Treats your todo list as a program's heap, and uses GC to coldly 
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Anderson", email = "u3606584@connect.hku.hk" }]
 keywords = ["todo", "gc", "garbage-collection", "cli", "productivity"]
 classifiers = [
@@ -21,8 +22,14 @@ classifiers = [
 # Zero dependencies at the core: standard library only (sqlite3 / argparse / dataclasses / datetime).
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/Anderson-ops-oss/TodoGC"
+Documentation = "https://github.com/Anderson-ops-oss/TodoGC#usage-guide"
+Repository = "https://github.com/Anderson-ops-oss/TodoGC"
+Issues = "https://github.com/Anderson-ops-oss/TodoGC/issues"
+
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "build>=1.0", "ruff>=0.8", "basedpyright>=1.31"]  # tests, packaging, and static checks
+dev = ["pytest>=7.0", "build>=1.0", "twine>=6.1", "ruff>=0.8", "basedpyright>=1.31"]  # tests, packaging, and static checks
 color = ["rich>=13"]                 # optional: colored output when installed, core doesn't depend on it
 web = ["streamlit>=1.30", "Pillow>=10.1"]  # optional: Web UI and PNG review downloads
 export = ["Pillow>=10.1"]           # optional: PNG share cards; SVG needs no dependencies

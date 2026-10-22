@@ -25,6 +25,7 @@ htmlcov/
 *.db.bak
 *.watch/
 todogc.db
+todogc.toml
 
 # Editor / OS
 .vscode/

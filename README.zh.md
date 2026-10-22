@@ -13,22 +13,24 @@
 
 ## 安装与快速开始
 
-需要 **Python 3.10+**。在项目目录中执行：
+需要 **Python 3.10+**。发布到 PyPI 后，无须克隆仓库即可安装：
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
+python -m pip install todogc
 ```
 
-上述激活命令适用于 macOS/Linux；Windows PowerShell 使用 `.venv\Scripts\Activate.ps1`。
-核心仅使用 Python 标准库。按需在同一环境安装扩展：
+如果已安装 [pipx](https://pipx.pypa.io/stable/installation/)，可用 `pipx install todogc`，
+由它自动管理独立环境，不需要手动创建或激活。源码安装见[开发](#开发)。
+核心仅使用 Python 标准库，扩展按需安装：
 
-| 功能 | 从当前项目安装 |
+| 功能 | 从 PyPI 安装 |
 |---|---|
-| 终端彩色输出 | `python -m pip install -e ".[color]"` |
-| 网页及 PNG 导出 | `python -m pip install -e ".[web]"` |
-| 仅 PNG 导出 | `python -m pip install -e ".[export]"` |
+| 终端彩色输出 | `python -m pip install "todogc[color]"` |
+| 网页及 PNG 导出 | `python -m pip install "todogc[web]"` |
+| 仅 PNG 导出 | `python -m pip install "todogc[export]"` |
+
+升级使用 `python -m pip install --upgrade todogc`；通过 pipx 安装时用 `pipx upgrade todogc`。
+首次用 pipx 安装时，需要网页可选择 `pipx install "todogc[web]"`。
 
 创建目标及两层子任务：
 
@@ -355,13 +357,10 @@ JSON 包含完整回顾及所有完成项标题。
 Watch 默认每 **60 秒**检查一次，通过 ntfy 推送。
 **`watch`、`watch start`、`watch test` 都需要先配置通知**；普通任务管理和 Snooze 到期显示不需要。
 
-**1. 如果还没有配置文件，先创建：**
+**1. 在工作目录创建 `todogc.toml`（若尚不存在）。**
+可直接使用以下内容，或下载前文链接的完整模板；pip/pipx 用户不需要克隆仓库。
 
-```bash
-cp todogc.toml.example todogc.toml
-```
-
-**2. 修改该文件现有的 `[notify]` 和 `[watch]` 段：**
+**2. 添加或替换 `[notify]` 和 `[watch]` 段：**
 
 ```toml
 [notify]
@@ -500,17 +499,45 @@ Root 和元任务默认常驻，由 `doctor` 单独审计。
 
 ## 开发
 
-在项目目录运行：
+开发或源码安装时，在项目目录运行：
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install -e ".[dev]"
-ruff check todogc tests
+ruff check todogc tests scripts
 basedpyright
 pytest
 python -m build
+python -m twine check --strict dist/*
 ```
 
+上述激活命令适用于 macOS/Linux；Windows PowerShell 使用 `.venv\Scripts\Activate.ps1`。
+可编辑安装扩展使用 `python -m pip install -e ".[web]"` 或其他对应 extra。
+
 wheel 与源码包输出到 `dist/`。核心无运行时依赖；rich、Streamlit、Pillow 均为可选扩展。
+使用 `python scripts/smoke_wheel.py /path/to/todogc.whl` 可将指定 wheel 安装到临时独立环境，
+离开源码目录验证命令是否可用。
+
+### 发布
+
+[publish.yml](.github/workflows/publish.yml) 使用 PyPI Trusted Publishing，登记值如下：
+
+| PyPI 字段 | 内容 |
+|---|---|
+| Project | `todogc` |
+| Owner | `Anderson-ops-oss` |
+| Repository | `TodoGC` |
+| Workflow | `publish.yml` |
+| Environment | 留空，工作流不声明 environment。 |
+
+无需保存 PyPI API token。GitHub Actions 中的 **Publish to PyPI → Run workflow** 仅做测试、
+构建、元数据检查和独立安装验证，不上传；普通 push 也不会发布。
+
+正式发布时，确保 `pyproject.toml` 与 `todogc.__version__` 一致，将更改提交到 `main`，
+再发布标签为 `v<version>` 的非预发布 GitHub Release。工作流检查版本和标签是否位于 main 历史，
+运行 Python 3.10–3.13 测试，构建、检查包并通过 OIDC 上传验证过的产物。
+只有上传任务能申请身份令牌。以后每次发布都需要新的版本号，PyPI 文件无法覆盖。
 
 | 模块 | 职责 |
 |---|---|

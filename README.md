@@ -11,27 +11,33 @@ that have gone stale or lost their purpose.
 TodoGC includes a terminal CLI, an optional local Web UI, Inbox capture, nested
 subtasks, daily planning, scheduled Snooze, completion history, weekly share cards,
 and optional ntfy reminders. Tasks live in a local SQLite database. English is the
-primary language; [Chinese documentation](README.zh.md) and output are optional.
+primary language; [Chinese documentation](https://github.com/Anderson-ops-oss/TodoGC/blob/main/README.zh.md) and output are optional.
 
 ## Install and quick start
 
-Requires **Python 3.10+**. From a checkout of this repository:
+Requires **Python 3.10+**. Once a release is published on PyPI, install it without
+cloning the repository:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
+python -m pip install todogc
 ```
 
-The activation command above is for macOS/Linux; in Windows PowerShell use
-`.venv\Scripts\Activate.ps1`. The core uses only the Python standard library.
-Install optional features in the same environment as needed:
+For a standalone command without manually creating or activating an environment,
+use `pipx install todogc` if you have [pipx](https://pipx.pypa.io/stable/installation/)
+installed. It manages an isolated environment and exposes the `todogc` command.
+Source installation is covered under [Development](#development).
 
-| Feature | Install from this checkout |
+The core uses only the Python standard library. Optional features:
+
+| Feature | Install from PyPI |
 |---|---|
-| Colored terminal output | `python -m pip install -e ".[color]"` |
-| Web UI and PNG exports | `python -m pip install -e ".[web]"` |
-| PNG exports without the Web UI | `python -m pip install -e ".[export]"` |
+| Colored terminal output | `python -m pip install "todogc[color]"` |
+| Web UI and PNG exports | `python -m pip install "todogc[web]"` |
+| PNG exports without the Web UI | `python -m pip install "todogc[export]"` |
+
+Upgrade with `python -m pip install --upgrade todogc`, or `pipx upgrade todogc`
+for a pipx installation. Use `pipx install "todogc[web]"` when choosing the Web extra
+for a new pipx installation.
 
 Try a goal and two levels of subtasks:
 
@@ -72,7 +78,7 @@ All command examples and their behavior are grouped here:
 
 By default, TodoGC uses **`todogc.db` and `todogc.toml` in the current directory**.
 The database is created on first use; the config file is optional. The complete
-configuration template is [todogc.toml.example](todogc.toml.example).
+configuration template is [todogc.toml.example](https://github.com/Anderson-ops-oss/TodoGC/blob/main/todogc.toml.example).
 
 Global options go **before** the command:
 
@@ -372,7 +378,7 @@ use the same 1080 × 1350 layout and are generated locally. Cards are in English
 show numbers by default. `--highlight` adds titles for up to three completed IDs
 listed by that review. JSON includes the full review and all completed item titles.
 
-<img src="docs/weekly-review-example.png" alt="TodoGC weekly review card with sample data" width="430">
+<img src="https://raw.githubusercontent.com/Anderson-ops-oss/TodoGC/main/docs/weekly-review-example.png" alt="TodoGC weekly review card with sample data" width="430">
 
 *Example card using sample data.*
 
@@ -401,13 +407,11 @@ Watch checks for reminders every **60 seconds** by default and pushes through nt
 **Notifications must be configured before `watch`, `watch start`, or `watch test`.**
 Normal task management and Snooze visibility work without them.
 
-**1. Create a config file if one does not already exist:**
+**1. Create `todogc.toml` in your working directory if it does not exist.**
+Use the contents below, or download the linked configuration template. A pip/pipx
+installation does not require a repository checkout.
 
-```bash
-cp todogc.toml.example todogc.toml
-```
-
-**2. Edit `[notify]` and `[watch]` in that file** (replace existing sections):
+**2. Add or replace the `[notify]` and `[watch]` sections:**
 
 ```toml
 [notify]
@@ -567,18 +571,51 @@ its generation.
 
 ## Development
 
-Run checks from the checkout:
+For source installation and development, run these commands from the checkout:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install -e ".[dev]"
-ruff check todogc tests
+ruff check todogc tests scripts
 basedpyright
 pytest
 python -m build
+python -m twine check --strict dist/*
 ```
 
+The activation command is for macOS/Linux; in Windows PowerShell use
+`.venv\Scripts\Activate.ps1`. For editable optional features, install
+`python -m pip install -e ".[web]"` or the matching extra.
+
 Build output goes to `dist/` as a wheel and source archive. Core dependencies remain
-empty; `rich`, Streamlit, and Pillow are optional extras.
+empty; `rich`, Streamlit, and Pillow are optional extras. Run
+`python scripts/smoke_wheel.py /path/to/todogc.whl` to install a single built wheel in
+a temporary environment and exercise its commands outside the checkout.
+
+### Publishing
+
+[publish.yml](https://github.com/Anderson-ops-oss/TodoGC/blob/main/.github/workflows/publish.yml)
+uses PyPI Trusted Publishing with the following registration:
+
+| PyPI field | Value |
+|---|---|
+| Project | `todogc` |
+| Owner | `Anderson-ops-oss` |
+| Repository | `TodoGC` |
+| Workflow | `publish.yml` |
+| Environment | Leave blank; the workflow does not declare an environment. |
+
+No stored PyPI API token is needed. Running **Publish to PyPI → Run workflow** in
+GitHub Actions runs tests, builds, checks metadata, and tests the installed wheel,
+without uploading. Ordinary pushes do not publish either.
+
+To publish, make sure `pyproject.toml` and `todogc.__version__` match, commit the
+release changes to `main`, then publish a non-prerelease GitHub Release with tag
+`v<version>`. The workflow checks the version and that the tagged commit is on
+`main`, runs tests on Python 3.10–3.13, builds and checks the distributions, and
+uploads the verified artifacts through OIDC. Only the upload job can request an
+identity token. Every later release needs a new version; PyPI files cannot be replaced.
 
 | Modules | Responsibility |
 |---|---|

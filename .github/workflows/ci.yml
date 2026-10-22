@@ -17,8 +17,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e ".[dev]"
-      - run: ruff check todogc tests
+      - run: ruff check todogc tests scripts
       - run: basedpyright
       - run: pytest
       - if: matrix.python-version == '3.13'
         run: python -m build
+      - if: matrix.python-version == '3.13'
+        run: python -m twine check --strict dist/*
+      - if: matrix.python-version == '3.13'
+        run: python scripts/smoke_wheel.py dist/*.whl
