@@ -294,12 +294,14 @@ def cmd_focus(store: Store, args: argparse.Namespace) -> int:
     try:
         if args.cmd == "unfocus":
             store.unfocus_task(args.id)
+            message = "today.removed"
         else:
-            store.focus_task(args.id, position=args.position)
+            store.focus_task(args.id, position=args.position, with_subtasks=args.with_subtasks)
+            message = "today.added_subtasks" if args.with_subtasks else "today.added"
     except ValueError as exc:
         print(_t("cli.error", error=exc), file=sys.stderr)
         return 1
-    print(_t("today.removed" if args.cmd == "unfocus" else "today.added", id=args.id))
+    print(_t(message, id=args.id))
     return 0
 
 
@@ -926,6 +928,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("focus", help=_t("today.help.focus"))
     p.add_argument("id", type=_positive_int)
     p.add_argument("--position", type=_positive_int, help=_t("today.help.position"))
+    p.add_argument("--with-subtasks", action="store_true", help=_t("today.help.subtasks"))
     p.set_defaults(func=cmd_focus)
 
     p = sub.add_parser("unfocus", help=_t("today.help.unfocus"))

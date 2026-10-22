@@ -945,9 +945,14 @@ class Store:
             [(i, day.isoformat(), task_id) for i, task_id in enumerate(ids, 1)],
         )
 
-    def focus_task(self, task_id: int, *, position: int | None = None,
+    def focus_task(self, task_id: int, *, position: int | None = None, with_subtasks: bool = False,
                    ts: datetime | None = None) -> None:
-        """Select or reorder a task for the machine's local day, without touch events."""
+        """Atomically select a task and optionally its available containment descendants.
+
+        New selections append in parent-before-child order; existing selections keep
+        their positions. An explicit position moves the selected branch as one block.
+        Planning never writes touch events or changes lifecycle/GC state.
+        """
         now = ts or self._now()
         day = now.astimezone().date()
         with self._conn:
@@ -956,17 +961,41 @@ class Store:
             task = self._require_live_task(task_id)
             if task.in_inbox or task.is_snoozed(now):
                 raise ValueError(_t("today.error.unavailable", id=task_id))
+            branch = [task_id]
+            if with_subtasks:
+                children: dict[int, list[Task]] = {}
+                for child in self.descendants(task_id):
+                    if child.root_id is not None:
+                        children.setdefault(child.root_id, []).append(child)
+                pending = list(reversed(children.get(task_id, [])))
+                seen = {task_id}
+                while pending:
+                    child = pending.pop()
+                    tid = child.persisted_id
+                    if tid in seen:
+                        continue
+                    seen.add(tid)
+                    if child.state.is_active and not child.in_inbox and not child.is_snoozed(now):
+                        branch.append(tid)
+                    # A sleeping parent can still have awake, actionable children.
+                    pending.extend(reversed(children.get(tid, [])))
             ids = self.focus_task_ids(day)
-            if task_id in ids and position is None:
-                return
-            ids = [tid for tid in ids if tid != task_id]
-            if position is not None and not 1 <= position <= len(ids) + 1:
-                raise ValueError(_t("today.error.position", max=len(ids) + 1))
-            ids.insert(len(ids) if position is None else position - 1, task_id)
-            self._conn.execute(
+            if position is None:
+                existing = set(ids)
+                additions = [tid for tid in branch if tid not in existing]
+                if not additions:
+                    return
+                ids.extend(additions)
+            else:
+                selected = set(branch)
+                ids = [tid for tid in ids if tid not in selected]
+                if not 1 <= position <= len(ids) + 1:
+                    raise ValueError(_t("today.error.position", max=len(ids) + 1))
+                ids[position - 1:position - 1] = branch
+            self._conn.executemany(
                 """INSERT INTO daily_focus(day, task_id, position, removed) VALUES (?, ?, 0, 0)
                    ON CONFLICT(day, task_id) DO UPDATE SET removed = 0""",
-                (day.isoformat(), task_id),
+                [(day.isoformat(), tid) for tid in branch],
             )
             self._order_focus(day, ids)
 

@@ -516,7 +516,9 @@ Search filters are retained when navigating between pages in the same session.
 
 ```bash
 todogc focus 2                  # append to today's plan
+todogc focus 1 --with-subtasks  # include available descendants at every depth
 todogc focus 4 --position 1     # put #4 first; an existing selection can be reordered
+todogc focus 1 --with-subtasks --position 1  # move the selected branch together
 todogc today                    # plan, earlier unfinished selections, and today's wake-ups
 todogc progress 2 "Draft ready"
 todogc done 2 "Published"
@@ -527,6 +529,16 @@ Today is an ordered plan for the machine's **local calendar day**, shared betwee
 the CLI and Web UI and persisted across restarts. Choose a few actions; there is no
 hard task limit. A selection is independent of Root status, and can be a goal or a
 subtask. Inbox ideas must be organized first, and snoozed tasks must wake first.
+
+`focus ID` selects only that task. `--with-subtasks` includes the selected task and
+every available containment descendant, even when the selected task is itself a
+subtask. Done, Collected, Inbox, and currently snoozed descendants are skipped;
+awake children of a sleeping parent can still be selected. Reason/dependency edges
+are not followed. The selected task itself must be active, organized, and awake.
+New selections append in parent-before-child order; existing selections keep their
+positions and are never duplicated. With `--position N`, the available branch moves
+as one block at that position among the remaining selections. The whole operation
+is atomic and adds no view/progress events. The Web UI displays the same saved plan.
 
 After midnight a fresh plan starts. Unfinished selections from earlier days and
 tasks whose Snooze ended today appear as **suggestions**; they enter the new plan

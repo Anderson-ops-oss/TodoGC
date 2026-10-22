@@ -393,7 +393,9 @@ updated 忽略浏览事件；`--limit` 在筛选和排序后生效，`ls` 只给
 
 ```bash
 todogc focus 2
+todogc focus 1 --with-subtasks
 todogc focus 4 --position 1
+todogc focus 1 --with-subtasks --position 1
 todogc today
 todogc progress 2 "Draft ready"
 todogc done 2 "Published"
@@ -405,6 +407,13 @@ Today 按本机本地日期保存有序计划，终端和网页共享，重启�
 Snooze 到期任务只作为建议，不会自动加入。忽略建议后，需手动选择才会再次安排。
 已完成或变得暂不可执行的选择会保留在当日计划中；今日完成区也包含计划外完成的任务。
 安排计划不产生 view、progress 或 defer，不改变分代或 GC 可达性，也不提供额外 GC 保护。
+
+普通 `focus ID` 只选择指定任务。`--with-subtasks` 同时选择所有层级的可执行后代，
+可从 Root 或任意子任务开始，不跟随理由边。已完成、已回收、Inbox 和仍休眠的后代会跳过；
+休眠父任务下未休眠的子任务仍可选择。指定的起始任务本身必须活跃、已整理且未休眠。
+新增选择按父任务在前的顺序追加，已在计划中的任务保留位置且不重复；配合 `--position N`
+时，会将整组可执行任务一起移动到剩余选择中的指定位置。批量操作原子提交，不增加
+view 或 progress，网页端会显示同一份计划。
 
 网页默认进入 **Today**，导航另有 **Tasks / Inbox / Weekly review / Maintenance**。
 GC 日志、回收仪式、诊断和墓园集中在 Maintenance，想法收集和整理在 Inbox。
