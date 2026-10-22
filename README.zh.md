@@ -406,9 +406,12 @@ Snooze 到期任务只作为建议，不会自动加入。忽略建议后，需�
 已完成或变得暂不可执行的选择会保留在当日计划中；今日完成区也包含计划外完成的任务。
 安排计划不产生 view、progress 或 defer，不改变分代或 GC 可达性，也不提供额外 GC 保护。
 
+网页默认进入 **Today**，导航另有 **Tasks / Inbox / Weekly review / Maintenance**。
+GC 日志、回收仪式、诊断和墓园集中在 Maintenance，想法收集和整理在 Inbox。
+
 ## 任务树
 
-`todogc web` 首屏显示任务树和详情面板。点击箭头展开、收起多层子任务，点击节点查看路径、
+`todogc web` 的 **Tasks → Task tree** 显示任务树和详情面板。点击箭头展开、收起多层子任务，点击节点查看路径、
 分代和操作历史；窄屏下树与详情上下排列。
 
 - **Inbox / Goals / Unlinked / Meta-tasks** 分组展示顶层任务，树的层级只使用父子关联，不使用理由边。
@@ -471,8 +474,8 @@ pytest
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # 产出 dist/todogc-0.10.0-py3-none-any.whl 与 .tar.gz
-pip install dist/todogc-0.10.0-py3-none-any.whl   # 到哪都能装
+python -m build          # 产出 dist/todogc-0.11.0-py3-none-any.whl 与 .tar.gz
+pip install dist/todogc-0.11.0-py3-none-any.whl   # 到哪都能装
 ```
 
 `dist/`、`build/`、`*.egg-info/` 都在 `.gitignore` 里，产物不入库。想连 Web 端一起：`pip install "todogc[web]"`。

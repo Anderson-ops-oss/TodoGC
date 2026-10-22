@@ -27,6 +27,8 @@ def inbox_app(tmp_path, monkeypatch):
         store.capture("Fresh idea")
     app = AppTest.from_file(str(Path(webapp.__file__))).run(timeout=20)
     assert not app.exception
+    app.radio(key="page").set_value("inbox").run()
+    assert not app.exception
     return app, db
 
 
@@ -36,7 +38,7 @@ def test_capture_selects_idea_and_review_is_not_a_gc_candidate(inbox_app):
     assert any(warning.value == "Needs review" for warning in app.warning)
     assert "Needs review" in app.button(key="tree_select_4").label
     assert any("Needs review: 1" in caption.value for caption in app.caption)
-    assert not any("idea" in option for option in app.selectbox(key="add_parent").options)
+    assert not any("idea" in option for option in app.selectbox(key="inbox_parent_4").options)
     app.text_input(key="capture_title").set_value("New idea")
     next(button for button in app.button if button.label == "Capture idea").click().run()
     assert not app.exception
@@ -101,6 +103,7 @@ def test_capture_respects_capacity_and_completion_frees_a_slot(inbox_app):
 
 def test_existing_unlinked_task_moves_only_when_requested(inbox_app):
     app, db = inbox_app
+    app.radio(key="page").set_value("tasks").run()
     app.button(key="tree_select_3").click().run()
     with Store(db) as store:
         assert not store.get_task(3, record_view=False).in_inbox

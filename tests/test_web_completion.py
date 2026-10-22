@@ -24,6 +24,8 @@ def completion_app(tmp_path, monkeypatch):
         store.add_task("Write documentation", root_id=1)
     app = AppTest.from_file(str(Path(webapp.__file__))).run(timeout=20)
     assert not app.exception
+    app.radio(key="page").set_value("tasks").run()
+    assert not app.exception
     return app, db
 
 

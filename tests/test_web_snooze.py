@@ -24,6 +24,8 @@ def snooze_app(tmp_path, monkeypatch):
         store.capture('An idea')
     app = AppTest.from_file(str(Path(webapp.__file__))).run(timeout=20)
     assert not app.exception
+    app.radio(key='page').set_value('tasks').run()
+    assert not app.exception
     return app, db
 
 
@@ -68,6 +70,7 @@ def test_web_parent_context_and_explicit_subtree(snooze_app):
 
 def test_web_absolute_schedule_validation_reschedule_and_passive_expiry(snooze_app):
     app, db = snooze_app
+    app.radio(key='page').set_value('inbox').run()
     app.button(key='tree_select_4').click().run()
     app.text_input(key='snooze_time_4_duration').set_value('bad')
     app.button(key='snooze_4').click().run()

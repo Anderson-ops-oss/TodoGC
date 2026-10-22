@@ -28,6 +28,8 @@ def tree_app(tmp_path, monkeypatch):
         store.add_task("Another goal", is_root=True)
     app = AppTest.from_file(str(Path(webapp.__file__))).run(timeout=20)
     assert not app.exception
+    app.radio(key="page").set_value("tasks").run()
+    assert not app.exception
     return app, db
 
 

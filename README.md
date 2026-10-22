@@ -62,10 +62,10 @@ todogc dep 3 4                                             # #3's reason is #4
 todogc dep 4 3                                             # #4's reason is #3 — a cycle
 
 todogc ls                                    # look at your heap
-todogc focus 2                               # choose an action for today
-todogc today                                 # today's plan and suggestions; read-only
 todogc ls -q "write" --root-id 1 --sort newest # filter a goal's entire subtree
-todogc search "payment" --notes               # read-only search, including history notes
+todogc search "payment" --notes               # search all states, optionally including history notes; read-only
+todogc focus 2                               # choose a concrete action for today
+todogc today                                 # today's plan and suggestions; read-only
 todogc tree                                  # parent/child hierarchy, including Inbox; read-only
 todogc tree --show-completed                 # also show completed nodes
 todogc capture "Explore a browser extension" # quickly record an idea in Inbox
@@ -141,7 +141,15 @@ pip install -e ".[web]"
 todogc web                 # start a local server, opens in your browser (--port to change it)
 ```
 
-Same core, same heap map, just moved from the terminal into the browser:
+The sidebar separates daily work from maintenance:
+
+- **Today** opens by default: choose and order today's actions, record progress, and complete tasks.
+- **Tasks** offers a task tree and **Search & filters**, with the same query rules as the CLI.
+- **Inbox** contains quick capture and idea triage, including recovery of completed/discarded ideas.
+- **Weekly review** provides completion summaries, saved reviews, and share cards.
+- **Maintenance** contains the heap map, collection ceremony, diagnostics, GC history, and graveyard.
+
+Maintenance uses the same core as the terminal:
 
 - **-Xmx usage bar** + four generation cards (Eden / Survivor / Old / Metaspace): zombie
   rows **highlighted red**, `★` root gilded, `⊛` meta-task in magenta — same color
@@ -149,8 +157,8 @@ Same core, same heap map, just moved from the terminal into the browser:
 - **Stop-the-world ceremony** right on the page: pick "revive / collect / skip" for each
   zombie, fill in a `finalize()` eulogy, execute with one click — runs the same
   `run_ceremony` core as the CLI (`finalize` fires once, reviving promotes the generation)
-- Sidebar **add** (rejects allocation with an Allocation Failure when -Xmx is full), **graveyard**
-  one-click `restore`
+- The **Tasks** sidebar can add tasks (rejecting allocation when capacity is full);
+  the **Maintenance** graveyard offers one-click `restore`
 - **Task details** support edit/progress/snooze/link/dep and the event timeline; **Leak
   Inspector** and GC history share the same source as the CLI
 - A **Language** picker at the top of the sidebar — see [Language](#language)
@@ -535,11 +543,11 @@ tasks from GC. Record actual work with `progress` or `done`.
 
 ## Task tree
 
-`todogc web` opens with a task tree and a detail panel. Use the arrows to expand or
+In `todogc web`, open **Tasks → Task tree** for the tree and detail panel. Use the arrows to expand or
 collapse nested tasks; select a node to see its path, generation, history and actions.
 On narrow screens the tree appears above the detail panel.
 
-- **Inbox**, **Goals**, **Unlinked**, and **Meta-tasks** group top-level tasks. Nested tasks follow
+- **Goals**, **Unlinked**, and **Meta-tasks** group top-level tasks; ideas have their own **Inbox** page. Nested tasks follow
   their parent links; dependency/reason edges do not change the hierarchy.
 - **Add subtask** creates a task under the selected active task and selects it immediately.
   It follows the same heap-capacity rules as ordinary allocation.
@@ -623,7 +631,7 @@ todogc/
   query.py      shared read-only search, ranges, subtree filtering and sorting
   today.py      daily plan, unfinished suggestions, wake-ups and completions
   cli.py        command line + Stop-the-world ceremony + todogc watch + --lang
-  webapp.py     Streamlit Web UI (task tree + details + heap diagnostics + watcher + language switch, optional)
+  webapp.py     Streamlit Web UI (Today / Tasks / Inbox / Weekly review / Maintenance, optional)
 ```
 
 ## Tests
@@ -642,8 +650,8 @@ Zero core dependencies — packs into a standard wheel/sdist for direct distribu
 
 ```bash
 pip install -e ".[dev]"
-python -m build          # produces dist/todogc-0.10.0-py3-none-any.whl and .tar.gz
-pip install dist/todogc-0.10.0-py3-none-any.whl   # install it anywhere
+python -m build          # produces dist/todogc-0.11.0-py3-none-any.whl and .tar.gz
+pip install dist/todogc-0.11.0-py3-none-any.whl   # install it anywhere
 ```
 
 `dist/`, `build/`, `*.egg-info/` are all in `.gitignore` — build artifacts aren't
