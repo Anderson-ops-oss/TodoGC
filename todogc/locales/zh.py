@@ -562,4 +562,13 @@ MESSAGES: dict[str, str] = {
     # report.py: format_stats
     "report.stats.empty": "暂无 GC 历史。执行一次非 dry-run 的 `todogc gc` 后再来。",
     "report.stats.title": "━━ GC 历史统计 ━━━━━━━━━━━━━━━━━━━",
+    "skill.help.command": "安装或查看随包分发的 Codex / Claude Code Skill",
+    "skill.help.install": "从当前 Python 包安装或更新官方 Skill",
+    "skill.help.status": "只读查看 Skill 位置、状态与数据库绑定",
+    "skill.help.target": "Codex、Claude Code 或两者",
+    "skill.help.directory": "指定完整的 Skill 目录（仅支持单个平台）",
+    "skill.help.force": "覆盖修改过的内置 Skill 文件，保留无关文件",
+    "skill.result": "{target}: {state} — {path}",
+    "skill.runtime": "  数据库：{database}\n  配置：{config}",
+    "skill.ready": "  使用 {invocation}；若尚未出现在列表中，请开启新的 agent 会话。",
 }

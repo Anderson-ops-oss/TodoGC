@@ -28,7 +28,7 @@ from todogc.query import TaskQuery, query_tasks
 from todogc.today import TodayPlan, build_today
 from todogc.watcher import TickEvent, TickResult, Watcher, run_tick
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 __all__ = [
     "__version__",

@@ -23,6 +23,12 @@ def smoke_wheel(wheel: Path) -> None:
             raise ValueError("Expected a todogc wheel")
         if not any(name.endswith(".dist-info/licenses/LICENSE") for name in archive.namelist()):
             raise ValueError("MIT license is missing from the wheel")
+        for name in ("SKILL.md", "references/commands.md", "agents/openai.yaml"):
+            if f"todogc/skills/todogc/{name}" not in archive.namelist():
+                raise ValueError(f"Bundled skill file is missing from the wheel: {name}")
+        if any(name.startswith("todogc/skills/") and name.endswith("runtime.json")
+               for name in archive.namelist()):
+            raise ValueError("Personal skill runtime settings must not be shipped in the wheel")
 
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("TODOGC_") and key not in {"PYTHONPATH", "PYTHONHOME"}}
@@ -33,8 +39,8 @@ def smoke_wheel(wheel: Path) -> None:
         python = executable_dir / ("python.exe" if os.name == "nt" else "python")
         cli = executable_dir / ("todogc.exe" if os.name == "nt" else "todogc")
 
-        def run(*args: str) -> str:
-            result = subprocess.run(args, cwd=root, env=env, text=True, capture_output=True, check=True)
+        def run(*args: str, cwd: Path | None = None) -> str:
+            result = subprocess.run(args, cwd=cwd or root, env=env, text=True, capture_output=True, check=True)
             return result.stdout
 
         run(str(python), "-m", "pip", "install", "--no-index", "--no-deps", str(wheel))
@@ -54,7 +60,27 @@ def smoke_wheel(wheel: Path) -> None:
         status = json.loads(run(str(cli), "watch", "status", "--json"))
         if status["state"] != "stopped" or not (root / "review.svg").is_file():
             raise ValueError("Installed CLI smoke test failed")
-    print(f"todogc {version}: isolated pip install and CLI smoke test passed")
+        other_project = root / "another project"
+        other_project.mkdir()
+        (other_project / "todogc.toml").write_text("Invalid unrelated project configuration")
+        (other_project / "todogc.db").write_bytes(b"Unrelated database")
+        for platform in ("codex", "claude-code"):
+            directory = root / "installed skills" / platform
+            result = json.loads(run(str(cli), "--db", str(root / "todogc.db"),
+                                    "--config", str(root / "todogc.toml"), "skill", "install",
+                                    "--target", platform, "--directory", str(directory), "--json"))[0]
+            if not result["up_to_date"]:
+                raise ValueError(f"Installed skill is not current: {platform}")
+            runtime = json.loads((directory / "runtime.json").read_text())
+            prefix = [runtime["python"], "-m", "todogc.cli", "--db", runtime["database"],
+                      "--config", runtime["config"]]
+            title = f"Skill runtime for {platform}"
+            run(*prefix, "capture", title, cwd=other_project)
+            if title not in run(*prefix, "search", title, "--scope", "inbox", cwd=other_project):
+                raise ValueError(f"Installed skill could not use its bound runtime: {platform}")
+        if (other_project / "todogc.db").read_bytes() != b"Unrelated database":
+            raise ValueError("Skill command touched the wrong database")
+    print(f"todogc {version}: isolated pip install, CLI, and both installed skill runtimes passed")
 
 
 if __name__ == "__main__":

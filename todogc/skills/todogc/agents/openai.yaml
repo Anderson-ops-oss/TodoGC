@@ -1,0 +1,4 @@
+interface:
+  display_name: "TodoGC"
+  short_description: "Manage persistent tasks and your daily plan"
+  default_prompt: "Use $todogc to manage my tasks and today's plan."

@@ -56,6 +56,60 @@ Use the actual IDs returned by your commands. Examples throughout this guide are
 individual operations, rather than one script to run against an existing database.
 No configuration file or notification service is needed for ordinary task management.
 
+### Install the official AI skill with one prompt
+
+Give Codex or Claude Code this prompt:
+
+> Install or upgrade TodoGC from PyPI, then install its bundled official Skill for this agent using `todogc skill install --target codex` for Codex or `todogc skill install --target claude-code` for Claude Code; preserve my existing task database and verify the installation with `todogc skill status`.
+
+The official English skill ships **inside the wheel and source package** starting
+with 0.13.0. It needs no GitHub access, MCP server, hooks, API key, or source checkout.
+The agent can use pipx or its available Python environment, then run the installer.
+If the skill is not available in the current session, start a new session or have
+the agent read the installed `SKILL.md` directly for that conversation.
+
+Manual installation, after installing/upgrading the Python package:
+
+```bash
+todogc skill install --target codex
+todogc skill install --target claude-code
+todogc skill install --target all
+todogc skill status --json
+```
+
+| Platform | Default personal skill directory | Manual invocation |
+|---|---|---|
+| Codex | `~/.agents/skills/todogc/` | `$todogc` (CLI/IDE), or select the skill in your client |
+| Claude Code | `~/.claude/skills/todogc/` | `/todogc` |
+
+For example, ask `$todogc Capture an idea: explore an IBKR trading system`, or
+`/todogc Fix task #7's title to "Finish the IBKR trading system"`. The agent uses
+the existing task commands and returns actual task IDs/results. The skill also
+supports Today, progress/completion, Snooze, task trees, and weekly reviews.
+
+Installation records the current Python executable and absolute database/config
+paths in `runtime.json` beside the skill. Explicit `--db` / `TODOGC_DB` wins.
+A newly added platform reuses an existing managed skill's bindings. Otherwise,
+an existing `todogc.db` in the current directory is reused, or
+`~/.todogc/todogc.db` is selected. Configuration follows `--config` /
+`TODOGC_CONFIG`, an existing local `todogc.toml`, or `~/.todogc/todogc.toml`.
+The installer does not create or migrate the database or copy credentials.
+Reinstalling/upgrading preserves existing bindings unless explicitly overridden:
+
+```bash
+todogc --db /absolute/path/tasks.db --config /absolute/path/todogc.toml skill install --target all
+```
+
+Use those same paths with the CLI/Web UI to open the skill's task list. Ordinary
+CLI defaults still use the current directory. The skill creates the data directory
+when needed for the first task, rather than silently switching lists across projects.
+`CLAUDE_CONFIG_DIR` is honored for Claude Code. `--directory PATH` overrides the
+exact skill directory for a single target. Managed, unedited files update in place;
+local edits are preserved unless `--force` is explicitly supplied, and unrelated
+files are retained. Upgrading the Python package alone does not refresh copied
+skills: rerun the skill installer. This is a local-agent integration; cloud sessions
+need access to the installed skill, Python environment, and database separately.
+
 ## Usage guide
 
 All command examples and their behavior are grouped here:
@@ -63,6 +117,7 @@ All command examples and their behavior are grouped here:
 | I want to… | Go to |
 |---|---|
 | Choose a database, config file, or language | [Data and configuration](#data-and-configuration) |
+| Install the Codex / Claude Code skill | [Official AI skill](#install-the-official-ai-skill-with-one-prompt) |
 | Add, edit, finish, or reopen work | [Task lifecycle](#task-lifecycle) |
 | Organize goals and nested subtasks | [Tree and relationships](#tree-and-relationships) |
 | Capture an idea before committing to it | [Inbox](#inbox) |
@@ -625,6 +680,7 @@ identity token. Every later release needs a new version; PyPI files cannot be re
 | `review.py`, `review_card.py` | Weekly statistics, snapshots, and exports. |
 | `notify.py`, `watcher.py`, `watch_service.py`, `scheduling.py` | Delivery, checks, process management, and scheduling. |
 | `config.py`, `i18n.py`, `locales/` | Configuration and English/Chinese messages. |
+| `skill_install.py`, `skills/todogc/` | Offline skill installation, fixed runtime bindings, and shared agent guidance. |
 | `cli.py`, `webapp.py` | Terminal and optional browser interfaces. |
 
 ## License

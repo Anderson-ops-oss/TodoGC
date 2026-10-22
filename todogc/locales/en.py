@@ -584,4 +584,13 @@ MESSAGES: dict[str, str] = {
     # report.py: format_stats
     "report.stats.empty": "No GC history yet. Run a non-dry-run `todogc gc` first.",
     "report.stats.title": "━━ GC History Stats ━━━━━━━━━━━━━━━━━━━",
+    "skill.help.command": "install or inspect the bundled Codex / Claude Code skill",
+    "skill.help.install": "install or update the official skill from this Python package",
+    "skill.help.status": "show skill locations, state, and database bindings without changing files",
+    "skill.help.target": "Codex, Claude Code, or both",
+    "skill.help.directory": "override the exact skill directory (single target only)",
+    "skill.help.force": "replace modified bundled skill files; preserve unrelated files",
+    "skill.result": "{target}: {state} — {path}",
+    "skill.runtime": "  Database: {database}\n  Config: {config}",
+    "skill.ready": "  Invoke {invocation}; if it is not listed yet, start a new agent session.",
 }

@@ -889,6 +889,35 @@ def _add_query_arguments(parser: argparse.ArgumentParser, *, search: bool = Fals
     parser.add_argument("--limit", type=_positive_int, help=_t("query.help.limit"))
 
 
+def cmd_skill(args: argparse.Namespace) -> int:
+    """Manage bundled skills without opening or migrating the user's task database."""
+    from todogc.skill_install import TARGETS, install_skills, skill_status
+
+    try:
+        if args.skill_action == "install":
+            results = install_skills(args.target, database=args.db,
+                                     config=args.config or os.environ.get("TODOGC_CONFIG"),
+                                     destination=args.directory, force=args.force)
+        else:
+            if args.target == "all" and args.directory is not None:
+                raise ValueError("--directory requires a single target")
+            targets = TARGETS[:-1] if args.target == "all" else (args.target,)
+            results = [skill_status(target, destination=args.directory) for target in targets]
+        if args.json:
+            print(json.dumps(results, indent=2))
+        else:
+            for result in results:
+                print(_t("skill.result", target=result["target"], state=result["state"], path=result["path"]))
+                if "database" in result:
+                    print(_t("skill.runtime", database=result["database"], config=result["config"]))
+                if args.skill_action == "install":
+                    print(_t("skill.ready", invocation=result["invocation"]))
+        return 0
+    except (OSError, ValueError) as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser with all subcommands wired up.
 
@@ -896,7 +925,7 @@ def build_parser() -> argparse.ArgumentParser:
         argparse.ArgumentParser: a parser with subcommands and their func defaults attached.
     """
     parser = argparse.ArgumentParser(prog="todogc", description=_t("cli.help.description"))
-    parser.add_argument("--db", default=os.environ.get("TODOGC_DB", "todogc.db"), help=_t("cli.help.db"))
+    parser.add_argument("--db", default=os.environ.get("TODOGC_DB"), help=_t("cli.help.db"))
     parser.add_argument("--config", default=None, help=_t("cli.help.config"))
     parser.add_argument(
         "--heap-max", type=_positive_int, default=None, help=_t("cli.help.heap_max")
@@ -907,6 +936,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--restore-grace-days", type=_positive_int, default=None)
     parser.add_argument("--lang", choices=SUPPORTED_LOCALES, default=None, help=_t("cli.help.lang"))
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("skill", help=_t("skill.help.command"))
+    actions = p.add_subparsers(dest="skill_action", required=True)
+    for action in ("install", "status"):
+        operation = actions.add_parser(action, help=_t(f"skill.help.{action}"))
+        operation.add_argument("--target", choices=("codex", "claude-code", "all"),
+                               required=action == "install", default="all", help=_t("skill.help.target"))
+        operation.add_argument("--directory", help=_t("skill.help.directory"))
+        operation.add_argument("--json", action="store_true", help=_t("service.help.json"))
+        if action == "install":
+            operation.add_argument("--force", action="store_true", help=_t("skill.help.force"))
 
     p = sub.add_parser("add", help=_t("cli.help.cmd_add"))
     p.add_argument("title")
@@ -1130,6 +1170,9 @@ def main(argv: list[str] | None = None) -> int:
         set_locale(prelim_lang)
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.cmd == "skill":
+        return cmd_skill(args)
+    args.db = args.db if args.db is not None else "todogc.db"
     try:
         args.watch_config_unavailable = False
         try:

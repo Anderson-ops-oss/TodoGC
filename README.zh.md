@@ -48,6 +48,52 @@ todogc tree --show-completed
 请使用命令实际返回的编号。本文后续示例是单项操作示范，不是可以依次套用到现有数据库的脚本。
 普通任务管理不需要配置文件或通知服务；英文输出也不需要语言参数。
 
+### 一句 prompt 安装官方 Skill
+
+将下面一句话交给 Codex 或 Claude Code：
+
+> 请从 PyPI 安装或升级 TodoGC，再用 `todogc skill install --target codex`（Codex）或 `todogc skill install --target claude-code`（Claude Code）安装随包分发的官方 Skill，保留我现有的任务数据库，并用 `todogc skill status` 验证安装结果。
+
+从 0.13.0 起，官方英文 Skill **直接包含在 wheel 和源码包中**，不需要访问 GitHub、
+安装 MCP 服务、配置 hooks、提供 API key 或克隆仓库。AI 可以使用 pipx 或可用的 Python 环境，
+再运行安装器。当前会话尚未识别 Skill 时，可以开启新会话，或让 AI 直接读取安装后的 `SKILL.md`。
+
+程序安装或升级后，也可手动执行：
+
+```bash
+todogc skill install --target codex
+todogc skill install --target claude-code
+todogc skill install --target all
+todogc skill status --json
+```
+
+| 平台 | 默认个人 Skill 目录 | 手动调用 |
+|---|---|---|
+| Codex | `~/.agents/skills/todogc/` | CLI/IDE 使用 `$todogc`，或在客户端选择 Skill |
+| Claude Code | `~/.claude/skills/todogc/` | `/todogc` |
+
+例如 `$todogc 把探索 IBKR 交易系统的想法存入 Inbox`，或
+`/todogc 将 #7 的标题修正为 Finish the IBKR trading system`。
+AI 使用现有任务命令，返回真实编号和操作结果；也支持 Today、推进/完成、Snooze、任务树及周报。
+
+安装器把当前 Python 和数据库、配置文件的绝对路径记录在 Skill 旁的 `runtime.json` 中。
+优先使用 `--db` / `TODOGC_DB`；新增平台会复用已有官方 Skill 的绑定。
+没有已有绑定时，复用当前目录已有的 `todogc.db`，再否则选择 `~/.todogc/todogc.db`。
+配置文件依次取 `--config` / `TODOGC_CONFIG`、
+当前目录已有的 `todogc.toml`、`~/.todogc/todogc.toml`。
+安装过程不创建或迁移数据库，也不复制凭据；重装、升级保留已有绑定，除非明确覆盖：
+
+```bash
+todogc --db /absolute/path/tasks.db --config /absolute/path/todogc.toml skill install --target all
+```
+
+在终端/网页使用相同路径，就会打开 Skill 使用的任务列表；普通 CLI 仍默认使用当前目录。
+首次操作任务时，Skill 会按需创建数据目录，切换代码项目时保持同一任务库。
+Claude Code 支持 `CLAUDE_CONFIG_DIR`；`--directory PATH` 可为单个平台指定完整 Skill 目录。
+安装器自动更新未修改的官方文件，本地修改需要明确 `--force` 才覆盖，无关文件保留。
+只升级 Python 包不会更新复制的 Skill，需要再次运行安装器。
+这是本地 agent 集成；云端会话还需要单独获得 Skill、Python 环境和数据库访问能力。
+
 ## 使用指南
 
 命令、示例和相关规则集中在本节：
@@ -55,6 +101,7 @@ todogc tree --show-completed
 | 我想…… | 对应章节 |
 |---|---|
 | 选择数据库、配置文件或语言 | [数据与配置](#数据与配置) |
+| 安装 Codex / Claude Code Skill | [官方 AI Skill](#一句-prompt-安装官方-skill) |
 | 新建、编辑、完成或重新打开任务 | [任务生命周期](#任务生命周期) |
 | 整理目标和多层子任务 | [任务树与关联](#任务树与关联) |
 | 先记下一个尚未确定的想法 | [Inbox](#inbox) |
@@ -547,6 +594,7 @@ wheel 与源码包输出到 `dist/`。核心无运行时依赖；rich、Streamli
 | `review.py`、`review_card.py` | 周统计、快照与导出。 |
 | `notify.py`、`watcher.py`、`watch_service.py`、`scheduling.py` | 推送、检查、进程管理与调度。 |
 | `config.py`、`i18n.py`、`locales/` | 配置与英中文案。 |
+| `skill_install.py`、`skills/todogc/` | 离线安装、固定运行路径与共用操作说明。 |
 | `cli.py`、`webapp.py` | 终端与可选网页界面。 |
 
 ## License
