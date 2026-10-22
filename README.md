@@ -62,6 +62,8 @@ todogc dep 3 4                                             # #3's reason is #4
 todogc dep 4 3                                             # #4's reason is #3 — a cycle
 
 todogc ls                                    # look at your heap
+todogc focus 2                               # choose an action for today
+todogc today                                 # today's plan and suggestions; read-only
 todogc ls -q "write" --root-id 1 --sort newest # filter a goal's entire subtree
 todogc search "payment" --notes               # read-only search, including history notes
 todogc tree                                  # parent/child hierarchy, including Inbox; read-only
@@ -502,6 +504,35 @@ displayed, after filtering and limiting. Its default range still excludes Done.
 On the Web, open **Tasks → Search & filters** to find and operate on matching tasks.
 Search filters are retained when navigating between pages in the same session.
 
+## Today
+
+```bash
+todogc focus 2                  # append to today's plan
+todogc focus 4 --position 1     # put #4 first; an existing selection can be reordered
+todogc today                    # plan, earlier unfinished selections, and today's wake-ups
+todogc progress 2 "Draft ready"
+todogc done 2 "Published"
+todogc unfocus 4                # remove from the plan, or dismiss an earlier suggestion
+```
+
+Today is an ordered plan for the machine's **local calendar day**, shared between
+the CLI and Web UI and persisted across restarts. Choose a few actions; there is no
+hard task limit. A selection is independent of Root status, and can be a goal or a
+subtask. Inbox ideas must be organized first, and snoozed tasks must wake first.
+
+After midnight a fresh plan starts. Unfinished selections from earlier days and
+tasks whose Snooze ended today appear as **suggestions**; they enter the new plan
+only when explicitly added. Dismissing a suggestion removes it until you select
+the task again. Notification delivery does not consume wake-up suggestions.
+Completed and newly unavailable selections remain visible in that day's plan so
+you can see what happened or remove them. **Completed today** also includes tasks
+finished outside the plan.
+
+The Web UI lets you add tasks, move them up/down, remove them, and use the same
+progress/completion/Snooze actions as task details. Planning and browsing add no
+view, progress, or defer events, do not promote generations, and do not protect
+tasks from GC. Record actual work with `progress` or `done`.
+
 ## Task tree
 
 `todogc web` opens with a task tree and a detail panel. Use the arrows to expand or
@@ -590,6 +621,7 @@ todogc/
   watcher.py    scheduled-checkup core: event-driven + debounce + heartbeat digest + advisory single-instance lock
   tree.py       read-only task hierarchy, paths, grouping and legacy-cycle handling
   query.py      shared read-only search, ranges, subtree filtering and sorting
+  today.py      daily plan, unfinished suggestions, wake-ups and completions
   cli.py        command line + Stop-the-world ceremony + todogc watch + --lang
   webapp.py     Streamlit Web UI (task tree + details + heap diagnostics + watcher + language switch, optional)
 ```

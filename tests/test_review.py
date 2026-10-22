@@ -140,7 +140,7 @@ def test_legacy_migration_keeps_history_and_marks_fallback_labels(tmp_path, now)
         store._conn.execute('DROP TABLE review_snapshot')
         store._conn.execute("UPDATE schema_meta SET value = '7' WHERE key = 'schema_version'")
     with Store(db) as store:
-        assert store.schema_version == 8
+        assert store.schema_version == 9
         review = build_review(store, now=now)
         assert review.tasks_completed == 1 and review.legacy_labels
         assert len(store.touches(task.id)) == 2

@@ -25,6 +25,7 @@ from todogc.scheduling import local_time, parse_snooze_time
 from todogc.review import WeeklyReview, build_review, format_review
 from todogc.review_card import export_review
 from todogc.tree import format_task_tree, task_label
+from todogc.today import build_today
 from todogc.watcher import Watcher
 
 HEAP_MAX = 50  # -Xmx: the max number of tasks you can carry at once, used only for GC log display.
@@ -268,6 +269,37 @@ def cmd_ls(store: Store, args: argparse.Namespace) -> int:
         link = f" →#{t.root_id}" if t.root_id is not None else ""
         meta = " [meta]" if t.is_meta else " [inbox]" if t.in_inbox else ""
         print(f" {mark} #{t.id:>3} [{t.gen.value}:{t.age}] {t.title}{link}{meta}  <{t.state.value}>")
+    return 0
+
+
+def cmd_today(store: Store, args: argparse.Namespace) -> int:
+    now = datetime.now(timezone.utc)
+    plan = build_today(store, now=now)
+    roots = store.root_ids(active_only=False)
+    print(_t("today.heading", day=plan.day.isoformat()))
+    if not plan.selected:
+        print(_t("today.empty"))
+    for i, task in enumerate(plan.selected, 1):
+        print(f" {i}. {task_label(task, roots, now=now)} [{task.state.value}]")
+    for key, tasks in (("carryover", plan.carryover), ("waking", plan.waking), ("completed", plan.completed)):
+        if tasks:
+            print("\n" + _t(f"today.{key}"))
+            for task in tasks:
+                print(" " + task_label(task, roots, now=now))
+    print("\n" + _t("today.cli.hint"))
+    return 0
+
+
+def cmd_focus(store: Store, args: argparse.Namespace) -> int:
+    try:
+        if args.cmd == "unfocus":
+            store.unfocus_task(args.id)
+        else:
+            store.focus_task(args.id, position=args.position)
+    except ValueError as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
+        return 1
+    print(_t("today.removed" if args.cmd == "unfocus" else "today.added", id=args.id))
     return 0
 
 
@@ -887,6 +919,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query", help=_t("query.help.text"))
     _add_query_arguments(p, search=True)
     p.set_defaults(func=cmd_ls)
+
+    p = sub.add_parser("today", help=_t("today.help.command"))
+    p.set_defaults(func=cmd_today)
+
+    p = sub.add_parser("focus", help=_t("today.help.focus"))
+    p.add_argument("id", type=_positive_int)
+    p.add_argument("--position", type=_positive_int, help=_t("today.help.position"))
+    p.set_defaults(func=cmd_focus)
+
+    p = sub.add_parser("unfocus", help=_t("today.help.unfocus"))
+    p.add_argument("id", type=_positive_int)
+    p.set_defaults(func=cmd_focus)
 
     p = sub.add_parser("progress", help=_t("cli.help.cmd_progress"))
     p.add_argument("id", type=int)

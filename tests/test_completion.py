@@ -152,7 +152,7 @@ def test_v4_migration_preserves_data_and_backup_and_persists_completion(tmp_path
         store._conn.execute("ALTER TABLE task DROP COLUMN snooze_notified_until")
         store._conn.execute("UPDATE schema_meta SET value = '4' WHERE key = 'schema_version'")
     with Store(path) as store:
-        assert store.schema_version == 8
+        assert store.schema_version == 9
         assert store.get_task(task.id, record_view=False).completed_at is None
         store.complete_task(task.id, ts=now)
     with sqlite3.connect(str(path) + ".bak") as backup:

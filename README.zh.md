@@ -389,6 +389,23 @@ collected、all，与原有 `--state` 二选一。排序支持 id、newest、old
 updated 忽略浏览事件；`--limit` 在筛选和排序后生效，`ls` 只给实际显示的任务增加 view。
 网页在 **Tasks → Search & filters** 中使用相同规则，同一会话切换页面会保留搜索条件。
 
+## 今日计划
+
+```bash
+todogc focus 2
+todogc focus 4 --position 1
+todogc today
+todogc progress 2 "Draft ready"
+todogc done 2 "Published"
+todogc unfocus 4
+```
+
+Today 按本机本地日期保存有序计划，终端和网页共享，重启后保留。Inbox 想法需先整理，休眠
+任务需先唤醒；Root 身份与今日选择互相独立。隔天计划重新开始，之前未完成的选择和今日
+Snooze 到期任务只作为建议，不会自动加入。忽略建议后，需手动选择才会再次安排。
+已完成或变得暂不可执行的选择会保留在当日计划中；今日完成区也包含计划外完成的任务。
+安排计划不产生 view、progress 或 defer，不改变分代或 GC 可达性，也不提供额外 GC 保护。
+
 ## 任务树
 
 `todogc web` 首屏显示任务树和详情面板。点击箭头展开、收起多层子任务，点击节点查看路径、

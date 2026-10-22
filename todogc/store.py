@@ -7,7 +7,7 @@ from __future__ import annotations
 import sqlite3
 import shutil
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from todogc.heap import SNOOZE_GRACE_DAYS, Generation, ReferenceStrength, State, Task, Touch, TouchKind
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS dep (
 CREATE INDEX IF NOT EXISTS idx_touch_task ON touch(task_id);
 """
 
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 
 
 @dataclass(frozen=True)
@@ -258,6 +258,20 @@ class Store:
                 """
             )
             version = 8
+        if version < 9:
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS daily_focus (
+                    day TEXT NOT NULL,
+                    task_id INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL,
+                    removed INTEGER NOT NULL DEFAULT 0 CHECK(removed IN (0, 1)),
+                    PRIMARY KEY(day, task_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_daily_focus_task ON daily_focus(task_id, day);
+                """
+            )
+            version = 9
         self._conn.execute(
             "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -905,6 +919,76 @@ class Store:
             (State.LIVE.value, State.CANDIDATE.value, Generation.META.value),
         ).fetchone()
         return int(row[0])
+
+    # ---- daily planning (independent of GC state and progress) ----
+
+    def focus_task_ids(self, day: date) -> list[int]:
+        return [int(row[0]) for row in self._conn.execute(
+            "SELECT task_id FROM daily_focus WHERE day = ? AND removed = 0 ORDER BY position, task_id",
+            (day.isoformat(),),
+        )]
+
+    def previous_focus_ids(self, day: date) -> list[int]:
+        """Latest earlier selections, excluding anything explicitly handled today."""
+        return [int(row[0]) for row in self._conn.execute(
+            """SELECT f.task_id FROM daily_focus f
+               WHERE f.day < ? AND f.removed = 0
+                 AND f.day = (SELECT MAX(latest.day) FROM daily_focus latest
+                              WHERE latest.task_id = f.task_id AND latest.day <= ?)
+               ORDER BY f.day DESC, f.position, f.task_id""",
+            (day.isoformat(), day.isoformat()),
+        )]
+
+    def _order_focus(self, day: date, ids: list[int]) -> None:
+        self._conn.executemany(
+            "UPDATE daily_focus SET position = ? WHERE day = ? AND task_id = ?",
+            [(i, day.isoformat(), task_id) for i, task_id in enumerate(ids, 1)],
+        )
+
+    def focus_task(self, task_id: int, *, position: int | None = None,
+                   ts: datetime | None = None) -> None:
+        """Select or reorder a task for the machine's local day, without touch events."""
+        now = ts or self._now()
+        day = now.astimezone().date()
+        with self._conn:
+            if not self._conn.in_transaction:
+                self._conn.execute("BEGIN IMMEDIATE")
+            task = self._require_live_task(task_id)
+            if task.in_inbox or task.is_snoozed(now):
+                raise ValueError(_t("today.error.unavailable", id=task_id))
+            ids = self.focus_task_ids(day)
+            if task_id in ids and position is None:
+                return
+            ids = [tid for tid in ids if tid != task_id]
+            if position is not None and not 1 <= position <= len(ids) + 1:
+                raise ValueError(_t("today.error.position", max=len(ids) + 1))
+            ids.insert(len(ids) if position is None else position - 1, task_id)
+            self._conn.execute(
+                """INSERT INTO daily_focus(day, task_id, position, removed) VALUES (?, ?, 0, 0)
+                   ON CONFLICT(day, task_id) DO UPDATE SET removed = 0""",
+                (day.isoformat(), task_id),
+            )
+            self._order_focus(day, ids)
+
+    def unfocus_task(self, task_id: int, *, ts: datetime | None = None) -> None:
+        """Remove a selection/suggestion today; keep earlier daily plans intact."""
+        day = (ts or self._now()).astimezone().date()
+        with self._conn:
+            if not self._conn.in_transaction:
+                self._conn.execute("BEGIN IMMEDIATE")
+            if self.get_task(task_id, record_view=False) is None:
+                raise ValueError(_t("store.error.task_not_found", id=task_id))
+            self._conn.execute(
+                """INSERT INTO daily_focus(day, task_id, position, removed) VALUES (?, ?, 0, 1)
+                   ON CONFLICT(day, task_id) DO UPDATE SET removed = 1""",
+                (day.isoformat(), task_id),
+            )
+            self._order_focus(day, self.focus_task_ids(day))
+
+    def handled_focus_ids(self, day: date) -> set[int]:
+        return {int(row[0]) for row in self._conn.execute(
+            "SELECT task_id FROM daily_focus WHERE day = ?", (day.isoformat(),),
+        )}
 
     # ---- reads (auto-track a view event by default) ----
 

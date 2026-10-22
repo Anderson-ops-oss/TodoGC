@@ -167,7 +167,7 @@ def test_schema_v6_migration_preserves_inbox_and_completion(tmp_path, now):
         store._conn.execute('ALTER TABLE task DROP COLUMN snooze_notified_until')
         store._conn.execute("UPDATE schema_meta SET value='6' WHERE key='schema_version'")
     with Store(path) as store:
-        assert store.schema_version == 8
+        assert store.schema_version == 9
         assert store.get_task(goal.id, record_view=False).completed_at == now
         assert store.get_task(idea.id, record_view=False).in_inbox
         assert all(task.snoozed_until is None for task in store.list_tasks(record_view=False))

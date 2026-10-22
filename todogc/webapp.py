@@ -25,6 +25,7 @@ from todogc.store import Store
 from todogc.scheduling import local_time, parse_snooze_time
 from todogc.tree import TaskTree, build_task_tree, task_label
 from todogc.watcher import Watcher
+from todogc.today import build_today
 
 if TYPE_CHECKING:
     import streamlit as st  # pyright: ignore[reportMissingImports]
@@ -525,7 +526,8 @@ def _render_snooze(store: Store, task: Task, now: datetime, *, lang: str) -> Non
                 st.error(str(exc))
 
 
-def _render_task_details(store: Store, task: Task, heap_max: int, now: datetime, *, lang: str) -> None:
+def _render_task_details(store: Store, task: Task, heap_max: int, now: datetime, *, lang: str,
+                         actions: bool = True) -> None:
     """Operate on the selected node; selection and browsing never record view events."""
     task_id = task.persisted_id
     c0, c1 = st.columns(2)
@@ -535,36 +537,14 @@ def _render_task_details(store: Store, task: Task, heap_max: int, now: datetime,
         _t("webapp.field.ref_strength", lang=lang), strength_values,
         index=strength_values.index(task.ref_strength.value), key=f"edit_ref_{task_id}",
     )
-    note = st.text_input(_t("webapp.task_manager.note_label", lang=lang), key=f"event_note_{task_id}")
-    b0, b1, b2 = st.columns(3)
-    if b0.button(_t("webapp.task_manager.save_button", lang=lang), key=f"save_{task_id}"):
+    if st.button(_t("webapp.task_manager.save_button", lang=lang), key=f"save_{task_id}"):
         try:
             store.edit_task(task_id, title=title, ref_strength=strength, ts=now)
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
-    if b1.button(_t("webapp.task_manager.progress_button", lang=lang), key=f"progress_{task_id}"):
-        store.progress(task_id, note, ts=now)
-        st.rerun()
-    if b2.button(_t("webapp.task_manager.defer_button", lang=lang), key=f"defer_{task_id}"):
-        store.defer(task_id, note, ts=now)
-        st.rerun()
-
-    children = store.active_descendants(task_id)
-    with_subtasks = False
-    if children:
-        st.caption(_t("webapp.done.unfinished", lang=lang))
-        for child in children:
-            st.text(f"#{child.id} {child.title}")
-        with_subtasks = st.checkbox(
-            _t("webapp.done.with_subtasks", lang=lang), key=f"done_subtasks_{task_id}"
-        )
-    if st.button(_t("webapp.done.button", lang=lang), key=f"done_{task_id}"):
-        try:
-            store.complete_task(task_id, with_subtasks=with_subtasks, note=note, ts=now)
-            st.rerun()
-        except ValueError as exc:
-            st.error(str(exc))
+    if actions:
+        _render_task_actions(store, task, now, lang=lang)
 
     if task.root_id is None and not task.is_meta and task_id not in store.root_ids():
         if st.button(_t("inbox.move_button", lang=lang), key=f"inbox_move_{task_id}"):
@@ -840,16 +820,29 @@ def _render_weekly_review(store: Store, now: datetime, *, lang: str) -> None:
         st.image(render_svg(review).decode("utf-8"), width=540)
 
 
-def _render_selected_task(store: Store, task: Task, heap_max: int, now: datetime, *, lang: str) -> None:
-    """Share task actions between tree and search results."""
+def _render_selected_task(store: Store, task: Task, heap_max: int, now: datetime, *, lang: str,
+                          compact: bool = False) -> None:
+    """Use the same task actions from tree, search, Inbox and Today."""
     st.text(f"#{task.id} {task.title}")
     tree = build_task_tree(store.list_tasks(record_view=False), store.root_ids(active_only=False),
                            show_completed=True, show_snoozed=True, now=now)
     if task.persisted_id in tree.tasks:
         st.caption(_t("webapp.tree.path", lang=lang))
         st.text(" / ".join(f"#{item.id} {item.title}" for item in tree.path(task.persisted_id)))
-    st.caption(_t("webapp.tree.generation_label", lang=lang, name=_t(f"webapp.tree.generation.{task.gen.value}", lang=lang)))
-    if task.state.is_active:
+    if not compact:
+        st.caption(_t("webapp.tree.generation_label", lang=lang, name=_t(f"webapp.tree.generation.{task.gen.value}", lang=lang)))
+    if task.state.is_active and not compact:
+        if not task.in_inbox and not task.is_snoozed(now):
+            focused = task.persisted_id in store.focus_task_ids(now.astimezone().date())
+            if st.button(_t("today.remove" if focused else "today.add", lang=lang), key=f"focus_{task.id}"):
+                try:
+                    if focused:
+                        store.unfocus_task(task.persisted_id, ts=now)
+                    else:
+                        store.focus_task(task.persisted_id, ts=now)
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
         _render_snooze(store, task, now, lang=lang)
     if task.state is State.DONE:
         _render_selected_completed(store, task, heap_max, now, lang=lang)
@@ -859,8 +852,15 @@ def _render_selected_task(store: Store, task: Task, heap_max: int, now: datetime
         _render_task_history(store, task.persisted_id, lang=lang)
     elif task.in_inbox:
         _render_inbox_details(store, task, now, lang=lang)
+    elif compact:
+        _render_task_actions(store, task, now, lang=lang)
+        _render_snooze(store, task, now, lang=lang)
+        with st.expander(_t("today.details", lang=lang)):
+            _render_task_details(store, task, heap_max, now, lang=lang, actions=False)
     else:
         _render_task_details(store, task, heap_max, now, lang=lang)
+    if compact and task.is_snoozed(now):
+        _render_snooze(store, task, now, lang=lang)
 
 def _clear_search() -> None:
     for key, value in {"search_text": "", "search_scope": "active", "search_root": 0,
@@ -905,6 +905,124 @@ def _render_search(store: Store, heap_max: int, now: datetime, *, lang: str) -> 
         _render_selected_task(store, tasks[selected], heap_max, now, lang=lang)
 
 
+def _render_task_actions(store: Store, task: Task, now: datetime, *, lang: str) -> None:
+    """Daily execution actions, shared with full task details."""
+    task_id = task.persisted_id
+    note = st.text_input(_t("webapp.task_manager.note_label", lang=lang), key=f"event_note_{task_id}")
+    progress, defer = st.columns(2)
+    if progress.button(_t("webapp.task_manager.progress_button", lang=lang), key=f"progress_{task_id}"):
+        store.progress(task_id, note, ts=now)
+        st.rerun()
+    if defer.button(_t("webapp.task_manager.defer_button", lang=lang), key=f"defer_{task_id}"):
+        store.defer(task_id, note, ts=now)
+        st.rerun()
+
+    children = store.active_descendants(task_id)
+    with_subtasks = False
+    if children:
+        st.caption(_t("webapp.done.unfinished", lang=lang))
+        for child in children:
+            st.text(f"#{child.id} {child.title}")
+        with_subtasks = st.checkbox(
+            _t("webapp.done.with_subtasks", lang=lang), key=f"done_subtasks_{task_id}"
+        )
+    if st.button(_t("webapp.done.button", lang=lang), key=f"done_{task_id}"):
+        try:
+            store.complete_task(task_id, with_subtasks=with_subtasks, note=note, ts=now)
+            st.rerun()
+        except ValueError as exc:
+            st.error(str(exc))
+
+
+def _render_today(store: Store, heap_max: int, now: datetime, *, lang: str) -> None:
+    plan = build_today(store, now=now)
+    roots = store.root_ids(active_only=False)
+    st.title(_t("nav.today", lang=lang))
+    st.caption(plan.day.isoformat())
+    st.markdown("""<style>
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-today_up_"]):not(:has([class*="st-key-today_select_"])) {
+            display: grid; grid-template-columns: 2.75rem 2.75rem minmax(0, 1fr); gap: .5rem;
+        }
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-today_up_"]):not(:has([class*="st-key-today_select_"]))
+            > [data-testid="stColumn"] { min-width: 0; width: 100%; }
+        [class*="st-key-today_select_"] button,
+        [class*="st-key-today_select_"] button > div { justify-content: flex-start; text-align: left; }
+        </style>""", unsafe_allow_html=True)
+    st.caption(_t("today.hint", lang=lang))
+    selected_ids = {task.persisted_id for task in plan.selected}
+    ready = [task for task in plan.selected if task.state.is_active and not task.in_inbox and not task.is_snoozed(now)]
+    done = [task for task in plan.selected if task.state is State.DONE]
+    st.caption(_t("today.summary", lang=lang, pending=len(ready), done=len(done),
+                  paused=len(plan.selected) - len(ready) - len(done)))
+    with st.expander(_t("today.choose", lang=lang), expanded=not plan.selected):
+        text = st.text_input(_t("query.text", lang=lang), key="today_find")
+        available = {task.persisted_id: task for task in query_tasks(store, TaskQuery(text=text, sort="title"), now=now)
+                     if task.id not in selected_ids}
+        if available:
+            choice = st.selectbox(_t("today.choose", lang=lang), list(available), index=None,
+                                  placeholder=_t("today.choose_placeholder", lang=lang), key="today_picker",
+                                  format_func=lambda value: f"#{value} {available[value].title}")
+            if st.button(_t("today.add", lang=lang), key="today_add", disabled=choice is None) and choice is not None:
+                try:
+                    store.focus_task(choice, ts=now)
+                    st.session_state["today_selected_id"] = choice
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+        else:
+            st.info(_t("query.empty" if text else "today.choose_empty", lang=lang))
+    if not plan.selected:
+        st.info(_t("today.empty", lang=lang))
+    else:
+        selected = st.session_state.get("today_selected_id")
+        if selected not in selected_ids:
+            selected = (ready[0] if ready else plan.selected[0]).persisted_id
+            st.session_state["today_selected_id"] = selected
+        left, right = st.columns([4, 6], gap="large")
+        with left:
+            for i, task in enumerate(plan.selected):
+                tid = task.persisted_id
+                if st.button(f"{i + 1}. {task_label(task, roots, now=now, lang=lang)} [{task.state.value}]",
+                             key=f"today_select_{tid}", use_container_width=True,
+                             type="primary" if tid == selected else "secondary"):
+                    st.session_state["today_selected_id"] = tid
+                    st.rerun()
+                with st.container():
+                    up, down, remove = st.columns([1, 1, 2])
+                    movable = task.state.is_active and not task.in_inbox and not task.is_snoozed(now)
+                    if up.button("↑", key=f"today_up_{tid}", help=_t("today.up", lang=lang), disabled=i == 0 or not movable):
+                        store.focus_task(tid, position=i, ts=now)
+                        st.rerun()
+                    if down.button("↓", key=f"today_down_{tid}", help=_t("today.down", lang=lang), disabled=i == len(plan.selected) - 1 or not movable):
+                        store.focus_task(tid, position=i + 2, ts=now)
+                        st.rerun()
+                    if remove.button(_t("today.remove", lang=lang), key=f"today_remove_{tid}"):
+                        store.unfocus_task(tid, ts=now)
+                        st.rerun()
+        with right:
+            task = next(task for task in plan.selected if task.id == selected)
+            _render_selected_task(store, task, heap_max, now, lang=lang, compact=True)
+    for name, tasks in (("carryover", plan.carryover), ("waking", plan.waking)):
+        if not tasks:
+            continue
+        st.subheader(_t(f"today.{name}", lang=lang))
+        st.caption(_t("today.suggestions_hint", lang=lang))
+        for task in tasks:
+            title, add, dismiss = st.columns([6, 2, 2])
+            title.text(f"#{task.id} {task.title}")
+            if add.button(_t("today.add", lang=lang), key=f"today_suggest_{task.id}"):
+                store.focus_task(task.persisted_id, ts=now)
+                st.session_state["today_selected_id"] = task.persisted_id
+                st.rerun()
+            if dismiss.button(_t("today.dismiss", lang=lang), key=f"today_dismiss_{task.id}"):
+                store.unfocus_task(task.persisted_id, ts=now)
+                st.rerun()
+    if plan.completed:
+        st.subheader(_t("today.completed", lang=lang))
+        for task in plan.completed:
+            st.text(task_label(task, roots, now=now, lang=lang))
+
+
 def main() -> None:
     """Streamlit entry point: assembles the sidebar (add + -Xmx) and the main area (heap map / GC log / ceremony / graveyard).
 
@@ -943,8 +1061,8 @@ def main() -> None:
                 format_func=lambda code: _t(f"webapp.language.{code}", lang=lang), key="lang",
             ) or cfg.lang
             page = st.radio(
-                _t("review.web.navigation", lang=lang), ["tasks", "review"], key="page",
-                format_func=lambda value: _t("webapp.tree.title" if value == "tasks" else "review.title", lang=lang),
+                _t("review.web.navigation", lang=lang), ["tasks", "today", "review"], key="page",
+                format_func=lambda value: _t("nav.today" if value == "today" else "webapp.tree.title" if value == "tasks" else "review.title", lang=lang),
             )
             st.caption(_t("webapp.sidebar.db_caption", lang=lang, db=_db_path()))
             if cfg.ntfy_enabled:
@@ -980,6 +1098,10 @@ def main() -> None:
 
         if page == "review":
             _render_weekly_review(store, now, lang=lang)
+            return
+
+        if page == "today":
+            _render_today(store, heap_max, now, lang=lang)
             return
 
         st.title(_t("webapp.tree.title", lang=lang))
