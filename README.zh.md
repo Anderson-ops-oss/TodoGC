@@ -13,24 +13,56 @@
 
 ## 安装与快速开始
 
-需要 **Python 3.10+**。发布到 PyPI 后，无须克隆仓库即可安装：
+需要 **Python 3.10+**。建议使用官方安装器（TodoGC 0.14+），让普通终端和本机 AI 共用
+持久的用户级工具环境。安装器会配置 PATH、登记共享数据路径、安装官方 Skill，复用已有
+uv 或 pipx 安装；遇到多个安装或命令冲突时会报出原因。
 
-```bash
-python -m pip install todogc
+macOS / Linux：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Anderson-ops-oss/TodoGC/main/install.sh -o install-todogc.sh
+sh install-todogc.sh --target all
 ```
 
-如果已安装 [pipx](https://pipx.pypa.io/stable/installation/)，可用 `pipx install todogc`，
-由它自动管理独立环境，不需要手动创建或激活。源码安装见[开发](#开发)。
+Windows PowerShell：
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/Anderson-ops-oss/TodoGC/main/install.ps1 -OutFile install-todogc.ps1
+& .\install-todogc.ps1 -Target all
+```
+
+若执行策略阻止下载的脚本，可用
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\install-todogc.ps1 -Target all`，
+仅为该进程覆盖执行策略。安装后新开终端（必要时重启终端应用以刷新继承的 PATH），
+再运行 `todogc doctor --runtime`。安装器验证的是自身进程，会明确说明独立新终端尚未验证。
+
+已安装 uv 时，手动等效流程为：
+
+```bash
+uv tool install "todogc>=0.14.0"
+uv tool update-shell
+# 新开终端后执行：
+todogc setup
+todogc skill install --target all
+todogc doctor --runtime
+```
+
+已有 pipx 的用户可执行 `pipx install "todogc>=0.14.0"`、`pipx ensurepath`，
+新开终端后执行相同的 setup、skill、doctor 命令。两种方式均无需手动激活环境。
+仍支持在自行管理的 Python 环境中 `python -m pip install todogc`，但该方式不能保证
+其他终端能找到命令。源码安装见[开发](#开发)。0.14 尚未发布时，可先构建本地 wheel，
+通过安装器的 `--source` / `-Source` 传入绝对路径。
 核心仅使用 Python 标准库，扩展按需安装：
 
-| 功能 | 从 PyPI 安装 |
+| 功能 | 安装器 `--source` / `-Source` 参数 |
 |---|---|
-| 终端彩色输出 | `python -m pip install "todogc[color]"` |
-| 网页及 PNG 导出 | `python -m pip install "todogc[web]"` |
-| 仅 PNG 导出 | `python -m pip install "todogc[export]"` |
+| 终端彩色输出 | `"todogc[color]>=0.14.0"` |
+| 网页及 PNG 导出 | `"todogc[web]>=0.14.0"` |
+| 仅 PNG 导出 | `"todogc[export]>=0.14.0"` |
 
-升级使用 `python -m pip install --upgrade todogc`；通过 pipx 安装时用 `pipx upgrade todogc`。
-首次用 pipx 安装时，需要网页可选择 `pipx install "todogc[web]"`。
+重新运行官方安装器会升级程序和复制的 Skill，并保留已登记的数据库及已安装扩展。
+首次安装网页功能可传入 `--source "todogc[web]>=0.14.0"`，PowerShell 使用 `-Source`。
+也可通过 `uv tool upgrade todogc` / `pipx upgrade todogc` 升级，再运行 setup 和 Skill 安装。
 
 创建目标及两层子任务：
 
@@ -52,15 +84,18 @@ todogc tree --show-completed
 
 将下面一句话交给 Codex 或 Claude Code：
 
-> 请从 PyPI 安装或升级 TodoGC，再用 `todogc skill install --target codex`（Codex）或 `todogc skill install --target claude-code`（Claude Code）安装随包分发的官方 Skill，保留我现有的任务数据库，并用 `todogc skill status` 验证安装结果。
+> 请通过 TodoGC 官方 install.sh（macOS/Linux）或 install.ps1（Windows）安装或升级，并选择当前 agent 的 Skill 目标。使用我本机操作系统账户的持久工具环境，保留现有数据库。验证离开项目且无需激活虚拟环境即可找到 todogc，运行 `todogc doctor --json` 和 `todogc skill status`。请明确说明是否实际验证过独立新开的普通终端。
 
 从 0.13.0 起，官方英文 Skill **直接包含在 wheel 和源码包中**，不需要访问 GitHub、
-安装 MCP 服务、配置 hooks、提供 API key 或克隆仓库。AI 可以使用 pipx 或可用的 Python 环境，
-再运行安装器。当前会话尚未识别 Skill 时，可以开启新会话，或让 AI 直接读取安装后的 `SKILL.md`。
+安装 MCP 服务、配置 hooks、提供 API key 或克隆仓库。引导安装器使用持久 uv 工具环境，
+或复用已有 pipx 安装。应在与用户终端相同的本机系统、账户中运行；WSL、容器、远程机器
+和云端会话各自独立，修改其中的 PATH 无法让宿主终端获得命令。
+当前会话尚未识别 Skill 时，可以开启新会话，或让 AI 直接读取安装后的 `SKILL.md`。
 
 程序安装或升级后，也可手动执行：
 
 ```bash
+todogc setup
 todogc skill install --target codex
 todogc skill install --target claude-code
 todogc skill install --target all
@@ -76,19 +111,20 @@ todogc skill status --json
 `/todogc 将 #7 的标题修正为 Finish the IBKR trading system`。
 AI 使用现有任务命令，返回真实编号和操作结果；也支持 Today、推进/完成、Snooze、任务树及周报。
 
-安装器把当前 Python 和数据库、配置文件的绝对路径记录在 Skill 旁的 `runtime.json` 中。
-优先使用 `--db` / `TODOGC_DB`；新增平台会复用已有官方 Skill 的绑定。
-没有已有绑定时，复用当前目录已有的 `todogc.db`，再否则选择 `~/.todogc/todogc.db`。
-配置文件依次取 `--config` / `TODOGC_CONFIG`、
-当前目录已有的 `todogc.toml`、`~/.todogc/todogc.toml`。
+`setup` 把当前 Python 和数据库、配置文件的绝对路径登记在 `~/.todogc/runtime.json`，
+CLI、网页和 Skill 安装共用这些默认值。Skill 旁也保存绑定，便于 AI 在 PATH 不同时使用
+正确解释器。`--db` / `TODOGC_DB` 和 `--config` / `TODOGC_CONFIG` 可显式覆盖。
+首次登记优先复用已有官方 Skill 绑定，再选当前目录已有文件，最后选择 `~/.todogc/` 默认值。
+多个旧 Skill 的绑定冲突时，要求明确选择路径。
 安装过程不创建或迁移数据库，也不复制凭据；重装、升级保留已有绑定，除非明确覆盖：
 
 ```bash
-todogc --db /absolute/path/tasks.db --config /absolute/path/todogc.toml skill install --target all
+todogc --db /absolute/path/tasks.db --config /absolute/path/todogc.toml setup
+todogc skill install --target all
 ```
 
-在终端/网页使用相同路径，就会打开 Skill 使用的任务列表；普通 CLI 仍默认使用当前目录。
-首次操作任务时，Skill 会按需创建数据目录，切换代码项目时保持同一任务库。
+登记后，在任意项目目录启动普通 CLI 或网页，都会使用相同任务库。
+数据目录只在首次任务操作时按需创建，setup 和安装诊断不打开或迁移数据库。
 Claude Code 支持 `CLAUDE_CONFIG_DIR`；`--directory PATH` 可为单个平台指定完整 Skill 目录。
 安装器自动更新未修改的官方文件，本地修改需要明确 `--force` 才覆盖，无关文件保留。
 只升级 Python 包不会更新复制的 Skill，需要再次运行安装器。
@@ -115,7 +151,10 @@ Claude Code 支持 `CLAUDE_CONFIG_DIR`；`--directory PATH` 可为单个平台�
 
 ### 数据与配置
 
-默认使用**当前目录的 `todogc.db` 和 `todogc.toml`**。数据库首次使用时创建，配置文件可选。
+全新个人安装默认使用 **`~/.todogc/todogc.db` 和 `~/.todogc/todogc.toml`**。
+`todogc setup` 将选择登记为跨项目默认值。尚未登记时，兼容已有官方 Skill 绑定或当前目录
+已有文件；旧 Skill 冲突时应显式指定路径。登记后的默认值优先于当前项目的无关文件。
+数据库首次使用时创建，配置文件可选。
 完整配置模板见 [todogc.toml.example](todogc.toml.example)。
 
 全局选项放在**子命令前面**：
@@ -126,8 +165,12 @@ todogc --config /absolute/path/todogc.toml --db /absolute/path/tasks.db watch st
 todogc --heap-max 100 --gc-mode gentle gc --dry-run
 ```
 
-切换目录或管理 Watch 时应指向同一数据库。`--config` 只选择配置文件，不选择数据库；
-可在 shell 中设置 `TODOGC_DB` 和 `TODOGC_CONFIG`，让不同会话使用固定路径。
+`--config` 只选择配置文件，不选择数据库。使用 `todogc setup` 可统一终端、网页及 Skill
+的数据路径；`TODOGC_DB` 和 `TODOGC_CONFIG` 仍支持有意的会话级覆盖。
+
+路径优先级为 **CLI 参数 > 环境变量 > 个人登记 > 已有官方 Skill 绑定 > 当前目录已有文件 >
+个人默认目录**。`todogc doctor --runtime` 或 `--json` 只读诊断安装环境；
+原来的 `todogc doctor` 继续用于诊断任务认知泄漏。
 
 优先级为 **CLI 参数 > 环境变量 > 配置文件 > 默认值**。常用配置如下：
 
@@ -594,6 +637,7 @@ wheel 与源码包输出到 `dist/`。核心无运行时依赖；rich、Streamli
 | `review.py`、`review_card.py` | 周统计、快照与导出。 |
 | `notify.py`、`watcher.py`、`watch_service.py`、`scheduling.py` | 推送、检查、进程管理与调度。 |
 | `config.py`、`i18n.py`、`locales/` | 配置与英中文案。 |
+| `runtime.py`、`install.sh`、`install.ps1` | 共用个人数据路径、安装诊断与持久终端入口。 |
 | `skill_install.py`、`skills/todogc/` | 离线安装、固定运行路径与共用操作说明。 |
 | `cli.py`、`webapp.py` | 终端与可选网页界面。 |
 

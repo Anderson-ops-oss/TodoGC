@@ -15,29 +15,64 @@ primary language; [Chinese documentation](https://github.com/Anderson-ops-oss/To
 
 ## Install and quick start
 
-Requires **Python 3.10+**. Once a release is published on PyPI, install it without
-cloning the repository:
+Requires **Python 3.10+**. For a command shared by ordinary terminals and local AI
+agents, use the official installer (TodoGC 0.14+). It installs a persistent user
+tool environment, configures PATH, registers shared data paths, and installs the
+bundled skills. Existing uv or pipx TodoGC installations are reused; conflicting
+installations are reported rather than replaced.
 
-```bash
-python -m pip install todogc
+macOS / Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Anderson-ops-oss/TodoGC/main/install.sh -o install-todogc.sh
+sh install-todogc.sh --target all
 ```
 
-For a standalone command without manually creating or activating an environment,
-use `pipx install todogc` if you have [pipx](https://pipx.pypa.io/stable/installation/)
-installed. It manages an isolated environment and exposes the `todogc` command.
-Source installation is covered under [Development](#development).
+Windows PowerShell:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/Anderson-ops-oss/TodoGC/main/install.ps1 -OutFile install-todogc.ps1
+& .\install-todogc.ps1 -Target all
+```
+
+If PowerShell blocks the downloaded script, use
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\install-todogc.ps1 -Target all`
+for a process-only policy override. Open a new terminal after installation
+(restart the terminal app if it inherits the old PATH), then run
+`todogc doctor --runtime`. The installer checks its own process and does not claim
+to have tested an independently opened terminal.
+
+With uv already installed, the manual equivalent is:
+
+```bash
+uv tool install "todogc>=0.14.0"
+uv tool update-shell
+# Open a new terminal, then:
+todogc setup
+todogc skill install --target all
+todogc doctor --runtime
+```
+
+Existing pipx users can use `pipx install "todogc>=0.14.0"` and `pipx ensurepath`,
+then the same setup/skill/doctor commands. Neither approach needs environment
+activation. `python -m pip install todogc` remains supported in a Python environment
+you manage, but does not guarantee visibility in another terminal. Source installation
+is covered under [Development](#development). Until 0.14 is published, build a local
+wheel and pass its absolute path with `--source` / `-Source`.
 
 The core uses only the Python standard library. Optional features:
 
-| Feature | Install from PyPI |
+| Feature | Installer `--source` / `-Source` value |
 |---|---|
-| Colored terminal output | `python -m pip install "todogc[color]"` |
-| Web UI and PNG exports | `python -m pip install "todogc[web]"` |
-| PNG exports without the Web UI | `python -m pip install "todogc[export]"` |
+| Colored terminal output | `"todogc[color]>=0.14.0"` |
+| Web UI and PNG exports | `"todogc[web]>=0.14.0"` |
+| PNG exports without the Web UI | `"todogc[export]>=0.14.0"` |
 
-Upgrade with `python -m pip install --upgrade todogc`, or `pipx upgrade todogc`
-for a pipx installation. Use `pipx install "todogc[web]"` when choosing the Web extra
-for a new pipx installation.
+Rerun the official installer to upgrade the package and copied skills while preserving
+the registered database and installed extras. For a new installation with Web features,
+pass `--source "todogc[web]>=0.14.0"` (PowerShell: `-Source "todogc[web]>=0.14.0"`).
+Upgrade managed environments through their manager (`uv tool upgrade todogc` /
+`pipx upgrade todogc`), then rerun setup and skill installation.
 
 Try a goal and two levels of subtasks:
 
@@ -60,17 +95,21 @@ No configuration file or notification service is needed for ordinary task manage
 
 Give Codex or Claude Code this prompt:
 
-> Install or upgrade TodoGC from PyPI, then install its bundled official Skill for this agent using `todogc skill install --target codex` for Codex or `todogc skill install --target claude-code` for Claude Code; preserve my existing task database and verify the installation with `todogc skill status`.
+> Install or upgrade TodoGC using its official install.sh (macOS/Linux) or install.ps1 (Windows), selecting the skill target for this agent. Use a persistent tool installation for my local OS user and preserve my existing database. Verify command lookup outside the project without activating a virtual environment, run `todogc doctor --json`, and check `todogc skill status`. Clearly report whether an independently opened ordinary terminal has actually been verified.
 
 The official English skill ships **inside the wheel and source package** starting
 with 0.13.0. It needs no GitHub access, MCP server, hooks, API key, or source checkout.
-The agent can use pipx or its available Python environment, then run the installer.
+The bootstrap installer uses a persistent uv tool environment, or reuses an existing
+pipx installation. Run it on the same local OS/account as the user's terminal.
+WSL, containers, remote machines, and cloud sessions have separate environments;
+changing their PATH does not expose commands in the host terminal.
 If the skill is not available in the current session, start a new session or have
 the agent read the installed `SKILL.md` directly for that conversation.
 
 Manual installation, after installing/upgrading the Python package:
 
 ```bash
+todogc setup
 todogc skill install --target codex
 todogc skill install --target claude-code
 todogc skill install --target all
@@ -87,22 +126,23 @@ For example, ask `$todogc Capture an idea: explore an IBKR trading system`, or
 the existing task commands and returns actual task IDs/results. The skill also
 supports Today, progress/completion, Snooze, task trees, and weekly reviews.
 
-Installation records the current Python executable and absolute database/config
-paths in `runtime.json` beside the skill. Explicit `--db` / `TODOGC_DB` wins.
-A newly added platform reuses an existing managed skill's bindings. Otherwise,
-an existing `todogc.db` in the current directory is reused, or
-`~/.todogc/todogc.db` is selected. Configuration follows `--config` /
-`TODOGC_CONFIG`, an existing local `todogc.toml`, or `~/.todogc/todogc.toml`.
+`setup` registers the current Python and absolute database/config paths in
+`~/.todogc/runtime.json`. CLI, Web, and skill installation share those defaults.
+The skill also records its runtime beside `SKILL.md`, allowing the agent to use
+the correct interpreter even when its PATH differs. Explicit `--db` / `TODOGC_DB`
+and `--config` / `TODOGC_CONFIG` override the profile. First setup reuses existing
+official skill bindings, then existing directory-local files, then personal
+`~/.todogc/` defaults. Conflicting old skills require an explicit path selection.
 The installer does not create or migrate the database or copy credentials.
 Reinstalling/upgrading preserves existing bindings unless explicitly overridden:
 
 ```bash
-todogc --db /absolute/path/tasks.db --config /absolute/path/todogc.toml skill install --target all
+todogc --db /absolute/path/tasks.db --config /absolute/path/todogc.toml setup
+todogc skill install --target all
 ```
 
-Use those same paths with the CLI/Web UI to open the skill's task list. Ordinary
-CLI defaults still use the current directory. The skill creates the data directory
-when needed for the first task, rather than silently switching lists across projects.
+After setup, ordinary CLI/Web open the same task list from any project. Data
+directories are created on the first task operation, not during setup or diagnosis.
 `CLAUDE_CONFIG_DIR` is honored for Claude Code. `--directory PATH` overrides the
 exact skill directory for a single target. Managed, unedited files update in place;
 local edits are preserved unless `--force` is explicitly supplied, and unrelated
@@ -131,8 +171,12 @@ All command examples and their behavior are grouped here:
 
 ### Data and configuration
 
-By default, TodoGC uses **`todogc.db` and `todogc.toml` in the current directory**.
-The database is created on first use; the config file is optional. The complete
+New personal installations default to **`~/.todogc/todogc.db` and
+`~/.todogc/todogc.toml`**. `todogc setup` registers the selection across projects.
+Before setup, existing official skill bindings or directory-local files are reused
+for compatibility; use explicit paths if old skills disagree. A registered profile
+wins over unrelated project files. The database is created on first use; the config
+file is optional. The complete
 configuration template is [todogc.toml.example](https://github.com/Anderson-ops-oss/TodoGC/blob/main/todogc.toml.example).
 
 Global options go **before** the command:
@@ -143,9 +187,14 @@ todogc --config /absolute/path/todogc.toml --db /absolute/path/tasks.db watch st
 todogc --heap-max 100 --gc-mode gentle gc --dry-run
 ```
 
-Use the same database path when switching directories or managing a watcher.
-`--config` selects configuration; it does not select a database. To keep paths
-consistent across terminal sessions, set `TODOGC_DB` and `TODOGC_CONFIG` in your shell.
+`--config` selects configuration; it does not select a database. `todogc setup`
+keeps the default database/config consistent across terminals, Web, and Skill.
+`TODOGC_DB` and `TODOGC_CONFIG` support deliberate session overrides.
+
+Path precedence is **CLI options > environment variables > registered profile >
+existing official skill bindings > existing directory-local files > personal defaults**.
+`todogc doctor --runtime` (or `--json`) diagnoses the installation without opening
+SQLite. Plain `todogc doctor` continues to diagnose task memory leaks.
 
 Configuration precedence is **CLI options > environment variables > config file >
 defaults**. Common settings are:
@@ -680,6 +729,7 @@ identity token. Every later release needs a new version; PyPI files cannot be re
 | `review.py`, `review_card.py` | Weekly statistics, snapshots, and exports. |
 | `notify.py`, `watcher.py`, `watch_service.py`, `scheduling.py` | Delivery, checks, process management, and scheduling. |
 | `config.py`, `i18n.py`, `locales/` | Configuration and English/Chinese messages. |
+| `runtime.py`, `install.sh`, `install.ps1` | Shared personal paths, installation diagnostics, and persistent terminal setup. |
 | `skill_install.py`, `skills/todogc/` | Offline skill installation, fixed runtime bindings, and shared agent guidance. |
 | `cli.py`, `webapp.py` | Terminal and optional browser interfaces. |
 
