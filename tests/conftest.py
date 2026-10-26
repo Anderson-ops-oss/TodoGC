@@ -4,11 +4,29 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
+from pathlib import Path
 
 import pytest
 
 from todogc import i18n
 from todogc.store import Store
+
+
+@pytest.fixture(autouse=True)
+def _isolated_runtime_defaults(tmp_path, monkeypatch):
+    """Never let profile resolution use the developer's real task list or settings."""
+    home = tmp_path / "isolated home"
+    home.mkdir()
+    work = tmp_path / "isolated work"
+    work.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    for name in list(os.environ):
+        if name.startswith("TODOGC_") or name == "CLAUDE_CONFIG_DIR":
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.chdir(work)
 
 
 @pytest.fixture(autouse=True)

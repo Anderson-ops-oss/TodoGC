@@ -28,6 +28,7 @@ from todogc.review import WeeklyReview, build_review, format_review
 from todogc.review_card import export_review
 from todogc.tree import format_task_tree, task_label
 from todogc.today import build_today
+from todogc.runtime import doctor, ensure_database_parent, resolve_paths, setup_runtime
 from todogc.watcher import Watcher
 from todogc.watch_service import (
     WatchServiceError, configure_watch_logging, format_service_status,
@@ -596,6 +597,7 @@ def cmd_web(store: Store, args: argparse.Namespace) -> int:
     env = {
         **os.environ,
         "TODOGC_DB": args.db,
+        "TODOGC_CONFIG": args.config,
         "TODOGC_HEAP_MAX": str(args.heap_max),
         "TODOGC_GC_MODE": args.gc_policy.mode,
         "TODOGC_RECENT_DAYS": str(args.gc_policy.recent_days),
@@ -925,7 +927,7 @@ def build_parser() -> argparse.ArgumentParser:
         argparse.ArgumentParser: a parser with subcommands and their func defaults attached.
     """
     parser = argparse.ArgumentParser(prog="todogc", description=_t("cli.help.description"))
-    parser.add_argument("--db", default=os.environ.get("TODOGC_DB"), help=_t("cli.help.db"))
+    parser.add_argument("--db", default=None, help=_t("cli.help.db"))
     parser.add_argument("--config", default=None, help=_t("cli.help.config"))
     parser.add_argument(
         "--heap-max", type=_positive_int, default=None, help=_t("cli.help.heap_max")
@@ -936,6 +938,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--restore-grace-days", type=_positive_int, default=None)
     parser.add_argument("--lang", choices=SUPPORTED_LOCALES, default=None, help=_t("cli.help.lang"))
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    operation = sub.add_parser("setup", help=_t("runtime.help.setup"))
+    operation.add_argument("--json", action="store_true", help=_t("runtime.help.json"))
 
     p = sub.add_parser("skill", help=_t("skill.help.command"))
     actions = p.add_subparsers(dest="skill_action", required=True)
@@ -1111,6 +1116,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_link)
 
     p = sub.add_parser("doctor", help=_t("cli.help.cmd_doctor"))
+    p.add_argument("--runtime", action="store_true", help=_t("runtime.help.doctor"))
+    p.add_argument("--json", action="store_true", help=_t("runtime.help.json_doctor"))
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("stats", help=_t("cli.help.cmd_stats"))
@@ -1170,10 +1177,31 @@ def main(argv: list[str] | None = None) -> int:
         set_locale(prelim_lang)
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.cmd == "setup" or (args.cmd == "doctor" and (args.runtime or args.json)):
+        try:
+            result = setup_runtime(args.db, args.config) if args.cmd == "setup" else doctor(args.db, args.config)
+            if args.json:
+                print(json.dumps(result, indent=2))
+            elif args.cmd == "setup":
+                print(_t("runtime.setup.ready", path=result["path"], database=result["database"], config=result["config"]))
+            else:
+                for item in result["checks"]:
+                    print(f"{'OK' if item['ok'] else 'FAIL'} {item['name']}: {item['detail']}")
+                    if item["fix"]:
+                        print(f"  {item['fix']}")
+                print(_t("runtime.doctor.terminal"))
+            return 0 if args.cmd == "setup" or result["ok"] else 1
+        except (OSError, ValueError) as exc:
+            if args.json:
+                print(json.dumps({"ok": False, "error": str(exc)}))
+            else:
+                print(_t("cli.error", error=exc), file=sys.stderr)
+            return 1
     if args.cmd == "skill":
         return cmd_skill(args)
-    args.db = args.db if args.db is not None else "todogc.db"
     try:
+        paths = resolve_paths(args.db, args.config)
+        args.db, args.config = paths.database, paths.config
         args.watch_config_unavailable = False
         try:
             cfg = load_config(args.config)
@@ -1195,12 +1223,17 @@ def main(argv: list[str] | None = None) -> int:
             restore_grace_days=grace,
         )
         args.app_config = cfg  # the full config (including notify.*/watch.*); needed by the watch subcommand, ignored by the rest.
-    except (ConfigError, ValueError) as exc:
+    except (ConfigError, ValueError, OSError) as exc:
         print(_t("cli.error.config", error=exc), file=sys.stderr)
         return 2
     if args.cmd == "watch":
         return cmd_watch(None, args)
-    store = Store(args.db)
+    try:
+        ensure_database_parent(args.db)
+        store = Store(args.db)
+    except (OSError, sqlite3.Error) as exc:
+        print(_t("cli.error", error=exc), file=sys.stderr)
+        return 1
     try:
         return args.func(store, args)
     finally:

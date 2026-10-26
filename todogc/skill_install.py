@@ -12,6 +12,7 @@ import tempfile
 from typing import Any
 
 from todogc import __version__
+from todogc.runtime import resolve_paths
 
 TARGETS = ("codex", "claude-code", "all")
 BUNDLE_FILES = ("SKILL.md", "references/commands.md", "agents/openai.yaml")
@@ -62,7 +63,8 @@ def _runtime(directory: Path) -> dict[str, Any] | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if (not isinstance(data, dict) or data.get("managed_by") != "todogc"
-                or data.get("schema") != 1 or not isinstance(data.get("version"), str)
+                or type(data.get("schema")) is not int or data["schema"] != 1
+                or not isinstance(data.get("version"), str)
                 or not isinstance(data.get("files"), dict)
                 or not all(isinstance(value, str) for value in data["files"].values())):
             return None
@@ -70,7 +72,7 @@ def _runtime(directory: Path) -> dict[str, Any] | None:
             if not isinstance(data.get(key), str) or not Path(data[key]).is_absolute():
                 return None
         return data
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError):
         return None
 
 
@@ -84,20 +86,14 @@ def _file_path(value: str | Path) -> str:
 
 
 def _binding(previous: dict[str, Any] | None, *, database: str | None, config: str | None) -> dict[str, Any]:
-    # Preserve explicit bindings on upgrades, including when invoked from another repo.
-    if database is None:
-        database = str(previous["database"]) if previous else str(
-            Path.cwd() / "todogc.db" if (Path.cwd() / "todogc.db").is_file()
-            else Path.home() / ".todogc" / "todogc.db")
-    if config is None:
-        config = str(previous["config"]) if previous else str(
-            Path.cwd() / "todogc.toml" if (Path.cwd() / "todogc.toml").is_file()
-            else Path.home() / ".todogc" / "todogc.toml")
+    # A registered profile takes precedence over an old copied skill. Otherwise
+    # preserve that skill's choices, including when invoked from another repo.
+    paths = resolve_paths(database, config, previous=previous, inspect_skills=False)
     return {
         "managed_by": "todogc", "schema": 1, "version": __version__,
         # Preserve the venv/pipx executable path: resolving its symlink loses the environment.
         "python": os.path.abspath(sys.executable),
-        "database": _file_path(database), "config": _file_path(config),
+        "database": _file_path(paths.database), "config": _file_path(paths.config),
     }
 
 

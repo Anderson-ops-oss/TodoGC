@@ -164,7 +164,11 @@ def load_config(path: str | Path | None = None, *, environ: dict[str, str] | Non
     defaults. CLI arguments then override this again, in ``cli.main``.
     """
     env = os.environ if environ is None else environ
-    config_path = Path(path or env.get("TODOGC_CONFIG", "todogc.toml"))
+    from todogc.runtime import resolve_paths
+
+    config_path = Path(path if path is not None else (
+        env["TODOGC_CONFIG"] if "TODOGC_CONFIG" in env else
+        resolve_paths(database=":memory:", environ=env).config)).expanduser()
     data: dict[str, Any] = {}
     if config_path.exists():
         try:

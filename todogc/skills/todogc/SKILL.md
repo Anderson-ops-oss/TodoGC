@@ -24,6 +24,17 @@ parent directory does not exist on first use, create that directory before the
 first task command; do not create an empty database yourself or edit SQLite directly.
 The configuration file may be absent: TodoGC then uses its defaults.
 
+In PowerShell, a quoted executable needs the call operator, for example
+`& "<python>" -m todogc.cli --db "<database>" --config "<config>" <command>`.
+Prefer an argument-array subprocess API when available; never interpolate user
+task text into executable shell code.
+
+The official bootstrap installer registers shared defaults in
+`~/.todogc/runtime.json`. If terminal and Skill task lists differ, diagnose with
+the recorded Python and `-m todogc.cli doctor --json`. Report a binding mismatch
+and reinstall the skill from the intended persistent installation, preserving the
+chosen database. Do not silently replace a task list to make diagnostics pass.
+
 If `runtime.json` is missing, install this bundled skill with
 `todogc skill install --target codex` or `--target claude-code`. If the recorded
 Python was removed, locate the user's current TodoGC installation and reinstall

@@ -84,12 +84,10 @@ _ROW_COLOR: dict[RowKind, str] = {
 # ============ Dependency-free helpers (don't touch streamlit, safe to import) ============
 
 def _db_path() -> str:
-    """Resolve the database path: prefers the TODOGC_DB env var, same source as the CLI's --db default.
+    """Use the same personal profile and explicit overrides as the CLI and Skill."""
+    from todogc.runtime import resolve_paths
 
-    Returns:
-        str: the database file path (default "todogc.db").
-    """
-    return os.environ.get("TODOGC_DB", "todogc.db")
+    return resolve_paths().database
 
 
 def _default_heap_max() -> int:
@@ -1060,6 +1058,9 @@ def main() -> None:
         max_skips=cfg.max_consecutive_skips,
         restore_grace_days=cfg.restore_grace_days,
     )
+    from todogc.runtime import ensure_database_parent
+
+    ensure_database_parent(_db_path())
     store = Store(_db_path())
     try:
         if "navigate_to" in st.session_state:
