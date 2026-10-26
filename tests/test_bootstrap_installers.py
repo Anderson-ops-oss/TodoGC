@@ -306,12 +306,16 @@ def test_powershell_unsafe_profile_paths_fail_before_any_installation(tmp_path, 
     # Start with the valid inherited profile, then inject the hostile value only
     # inside the initialized child process, as data rather than command text.
     environment = {**os.environ, "TEST_UNSAFE_USERPROFILE": str(tmp_path / component),
-                   "TEST_PS_SCRIPT": str(ROOT / "install.ps1")}
+                   "TEST_PS_SCRIPT": str(ROOT / "install.ps1"), "TEST_ROOT": str(tmp_path)}
     script = r'''
 $ErrorActionPreference = 'Stop'
 $originalProfile = $env:USERPROFILE
 $beforeUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $beforeMachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+# Snapshot after host initialization, so its own startup cache is outside the
+# installer boundary. Use .NET APIs to avoid module-autoload filesystem writes.
+[string[]]$beforeFiles = [IO.Directory]::GetFileSystemEntries($env:TEST_ROOT, '*', [IO.SearchOption]::AllDirectories)
+[Array]::Sort($beforeFiles, [StringComparer]::Ordinal)
 $rejected = $false
 try {
     $env:USERPROFILE = $env:TEST_UNSAFE_USERPROFILE
@@ -329,11 +333,14 @@ if ([Environment]::GetEnvironmentVariable('Path', 'User') -cne $beforeUserPath -
     [Environment]::GetEnvironmentVariable('Path', 'Machine') -cne $beforeMachinePath) {
     throw 'Installer changed persistent PATH before rejecting the profile'
 }
+[string[]]$afterFiles = [IO.Directory]::GetFileSystemEntries($env:TEST_ROOT, '*', [IO.SearchOption]::AllDirectories)
+[Array]::Sort($afterFiles, [StringComparer]::Ordinal)
+if ([string]::Join("`0", $beforeFiles) -cne [string]::Join("`0", $afterFiles)) {
+    throw 'Installer changed the filesystem before rejecting the profile'
+}
 Write-Output 'Installer rejected unsafe USERPROFILE without changing persistent PATH'
 '''
-    before_files = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
     result = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-Command", script],
                             env=environment, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Installer rejected unsafe USERPROFILE without changing persistent PATH" in result.stdout
-    assert sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*")) == before_files
