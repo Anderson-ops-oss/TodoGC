@@ -85,9 +85,9 @@ _ROW_COLOR: dict[RowKind, str] = {
 
 def _db_path() -> str:
     """Use the same personal profile and explicit overrides as the CLI and Skill."""
-    from todogc.runtime import resolve_paths
+    from todogc.paths import resolve_database
 
-    return resolve_paths().database
+    return resolve_database()
 
 
 def _default_heap_max() -> int:

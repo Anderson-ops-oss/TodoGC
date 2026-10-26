@@ -160,15 +160,13 @@ def _review_timezone(value: Any) -> str:
 def load_config(path: str | Path | None = None, *, environ: dict[str, str] | None = None) -> AppConfig:
     """Read the config file and apply environment variable overrides.
 
-    Precedence: environment variables > the specified/current-directory config file >
-    defaults. CLI arguments then override this again, in ``cli.main``.
+    Paths use the same explicit/environment/profile/bound/shared defaults as the
+    CLI and skill installer. Environment settings override file values; CLI wins last.
     """
     env = os.environ if environ is None else environ
-    from todogc.runtime import resolve_paths
+    from todogc.paths import resolve_config
 
-    config_path = Path(path if path is not None else (
-        env["TODOGC_CONFIG"] if "TODOGC_CONFIG" in env else
-        resolve_paths(database=":memory:", environ=env).config)).expanduser()
+    config_path = Path(resolve_config(path, environ=env))
     data: dict[str, Any] = {}
     if config_path.exists():
         try:

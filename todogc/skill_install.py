@@ -13,8 +13,9 @@ from typing import Any
 
 from todogc import __version__
 from todogc.runtime import resolve_paths
-
-TARGETS = ("codex", "claude-code", "all")
+from todogc.paths import (
+    TARGETS, _check_path, read_runtime as _runtime, skill_directory,
+)
 BUNDLE_FILES = ("SKILL.md", "references/commands.md", "agents/openai.yaml")
 
 
@@ -31,49 +32,6 @@ def _assets() -> dict[str, bytes]:
 
 def _digest(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
-
-
-def skill_directory(target: str, *, destination: str | Path | None = None) -> Path:
-    if target not in TARGETS[:-1]:
-        raise ValueError("Choose codex or claude-code for a single skill directory")
-    if destination is not None:
-        return Path(destination).expanduser().absolute()
-    if target == "codex":
-        return Path.home() / ".agents" / "skills" / "todogc"
-    config_home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser()
-    return config_home.absolute() / "skills" / "todogc"
-
-
-def _check_path(directory: Path, relative: str) -> Path:
-    # Never follow a skill or a bundled file replaced with a symlink during an update.
-    path = directory
-    for part in ("", *PurePosixPath(relative).parts):
-        path = path / part if part else path
-        if path.is_symlink():
-            raise ValueError(f"Refusing to overwrite a symlink: {path}")
-    if directory.exists() and not directory.is_dir():
-        raise ValueError(f"Skill destination is not a directory: {directory}")
-    return path
-
-
-def _runtime(directory: Path) -> dict[str, Any] | None:
-    path = _check_path(directory, "runtime.json")
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if (not isinstance(data, dict) or data.get("managed_by") != "todogc"
-                or type(data.get("schema")) is not int or data["schema"] != 1
-                or not isinstance(data.get("version"), str)
-                or not isinstance(data.get("files"), dict)
-                or not all(isinstance(value, str) for value in data["files"].values())):
-            return None
-        for key in ("python", "database", "config"):
-            if not isinstance(data.get(key), str) or not Path(data[key]).is_absolute():
-                return None
-        return data
-    except (ValueError, UnicodeError, RecursionError):
-        return None
 
 
 def _file_path(value: str | Path) -> str:

@@ -114,7 +114,8 @@ AI 使用现有任务命令，返回真实编号和操作结果；也支持 Toda
 `setup` 把当前 Python 和数据库、配置文件的绝对路径登记在 `~/.todogc/runtime.json`，
 CLI、网页和 Skill 安装共用这些默认值。Skill 旁也保存绑定，便于 AI 在 PATH 不同时使用
 正确解释器。`--db` / `TODOGC_DB` 和 `--config` / `TODOGC_CONFIG` 可显式覆盖。
-首次登记优先复用已有官方 Skill 绑定，再选当前目录已有文件，最后选择 `~/.todogc/` 默认值。
+首次登记优先复用已有官方 Skill 绑定，再选 `~/.todogc/` 下已有共享文件、当前目录已有文件，
+最后选择个人默认路径。
 多个旧 Skill 的绑定冲突时，要求明确选择路径。
 安装过程不创建或迁移数据库，也不复制凭据；重装、升级保留已有绑定，除非明确覆盖：
 
@@ -126,6 +127,7 @@ todogc skill install --target all
 登记后，在任意项目目录启动普通 CLI 或网页，都会使用相同任务库。
 数据目录只在首次任务操作时按需创建，setup 和安装诊断不打开或迁移数据库。
 Claude Code 支持 `CLAUDE_CONFIG_DIR`；`--directory PATH` 可为单个平台指定完整 Skill 目录。
+自定义 Skill 目录的绑定不会被 CLI 自动发现；可用相同路径执行 setup，或显式选择该独立副本的路径。
 安装器自动更新未修改的官方文件，本地修改需要明确 `--force` 才覆盖，无关文件保留。
 只升级 Python 包不会更新复制的 Skill，需要再次运行安装器。
 这是本地 agent 集成；云端会话还需要单独获得 Skill、Python 环境和数据库访问能力。
@@ -152,8 +154,9 @@ Claude Code 支持 `CLAUDE_CONFIG_DIR`；`--directory PATH` 可为单个平台�
 ### 数据与配置
 
 全新个人安装默认使用 **`~/.todogc/todogc.db` 和 `~/.todogc/todogc.toml`**。
-`todogc setup` 将选择登记为跨项目默认值。尚未登记时，兼容已有官方 Skill 绑定或当前目录
-已有文件；旧 Skill 冲突时应显式指定路径。登记后的默认值优先于当前项目的无关文件。
+`todogc setup` 将选择登记为跨项目默认值。尚未登记时，优先复用已有官方 Skill 绑定和个人共享文件，
+再兼容当前目录已有文件；旧 Skill 冲突时应显式指定路径。登记后的默认值优先于当前项目的无关文件。
+需要独立项目任务库时使用 `--db ./todogc.db`；不自动移动或合并数据库。
 数据库首次使用时创建，配置文件可选。
 完整配置模板见 [todogc.toml.example](todogc.toml.example)。
 
@@ -168,7 +171,7 @@ todogc --heap-max 100 --gc-mode gentle gc --dry-run
 `--config` 只选择配置文件，不选择数据库。使用 `todogc setup` 可统一终端、网页及 Skill
 的数据路径；`TODOGC_DB` 和 `TODOGC_CONFIG` 仍支持有意的会话级覆盖。
 
-路径优先级为 **CLI 参数 > 环境变量 > 个人登记 > 已有官方 Skill 绑定 > 当前目录已有文件 >
+路径优先级为 **CLI 参数 > 环境变量 > 个人登记 > 已有官方 Skill 绑定 > 个人已有共享文件 > 当前目录已有文件 >
 个人默认目录**。`todogc doctor --runtime` 或 `--json` 只读诊断安装环境；
 原来的 `todogc doctor` 继续用于诊断任务认知泄漏。
 
@@ -637,7 +640,7 @@ wheel 与源码包输出到 `dist/`。核心无运行时依赖；rich、Streamli
 | `review.py`、`review_card.py` | 周统计、快照与导出。 |
 | `notify.py`、`watcher.py`、`watch_service.py`、`scheduling.py` | 推送、检查、进程管理与调度。 |
 | `config.py`、`i18n.py`、`locales/` | 配置与英中文案。 |
-| `runtime.py`、`install.sh`、`install.ps1` | 共用个人数据路径、安装诊断与持久终端入口。 |
+| `paths.py`、`runtime.py`、`install.sh`、`install.ps1` | 共用个人数据路径、安装诊断与持久终端入口。 |
 | `skill_install.py`、`skills/todogc/` | 离线安装、固定运行路径与共用操作说明。 |
 | `cli.py`、`webapp.py` | 终端与可选网页界面。 |
 

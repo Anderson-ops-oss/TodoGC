@@ -90,6 +90,10 @@ def smoke_wheel(wheel: Path) -> None:
                 raise ValueError(f"Installed skill could not use its bound runtime: {platform}")
             if title not in run("todogc", "search", title, "--scope", "inbox", cwd=other_project):
                 raise ValueError(f"Terminal CLI did not share the skill's database: {platform}")
+            cli_title = f"CLI runtime for {platform}"
+            run("todogc", "capture", cli_title, cwd=other_project)
+            if cli_title not in run(*prefix, "search", cli_title, "--scope", "inbox", cwd=other_project):
+                raise ValueError(f"Installed skill could not read the CLI's task list: {platform}")
         diagnostic = json.loads(run("todogc", "doctor", "--json", cwd=other_project))
         if not diagnostic["ok"] or diagnostic["database"] != str(database):
             raise ValueError(f"Installed runtime diagnostics failed: {diagnostic}")

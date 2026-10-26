@@ -131,8 +131,8 @@ supports Today, progress/completion, Snooze, task trees, and weekly reviews.
 The skill also records its runtime beside `SKILL.md`, allowing the agent to use
 the correct interpreter even when its PATH differs. Explicit `--db` / `TODOGC_DB`
 and `--config` / `TODOGC_CONFIG` override the profile. First setup reuses existing
-official skill bindings, then existing directory-local files, then personal
-`~/.todogc/` defaults. Conflicting old skills require an explicit path selection.
+official skill bindings, then existing personal files in `~/.todogc/`, then existing
+directory-local files, then personal defaults. Conflicting old skills require an explicit path selection.
 The installer does not create or migrate the database or copy credentials.
 Reinstalling/upgrading preserves existing bindings unless explicitly overridden:
 
@@ -149,6 +149,8 @@ local edits are preserved unless `--force` is explicitly supplied, and unrelated
 files are retained. Upgrading the Python package alone does not refresh copied
 skills: rerun the skill installer. This is a local-agent integration; cloud sessions
 need access to the installed skill, Python environment, and database separately.
+Bindings in a custom skill directory are not automatically discovered by the CLI;
+run `setup` with the same paths or select them explicitly for that standalone copy.
 
 ## Usage guide
 
@@ -173,8 +175,8 @@ All command examples and their behavior are grouped here:
 
 New personal installations default to **`~/.todogc/todogc.db` and
 `~/.todogc/todogc.toml`**. `todogc setup` registers the selection across projects.
-Before setup, existing official skill bindings or directory-local files are reused
-for compatibility; use explicit paths if old skills disagree. A registered profile
+Before setup, existing official skill bindings or personal shared files are reused,
+then directory-local files for compatibility; use explicit paths if old skills disagree. A registered profile
 wins over unrelated project files. The database is created on first use; the config
 file is optional. The complete
 configuration template is [todogc.toml.example](https://github.com/Anderson-ops-oss/TodoGC/blob/main/todogc.toml.example).
@@ -192,7 +194,8 @@ keeps the default database/config consistent across terminals, Web, and Skill.
 `TODOGC_DB` and `TODOGC_CONFIG` support deliberate session overrides.
 
 Path precedence is **CLI options > environment variables > registered profile >
-existing official skill bindings > existing directory-local files > personal defaults**.
+existing official skill bindings > existing personal files > existing directory-local files > personal defaults**.
+Use `--db ./todogc.db` for an intentional project-local list; files are never moved or merged automatically.
 `todogc doctor --runtime` (or `--json`) diagnoses the installation without opening
 SQLite. Plain `todogc doctor` continues to diagnose task memory leaks.
 
@@ -729,7 +732,7 @@ identity token. Every later release needs a new version; PyPI files cannot be re
 | `review.py`, `review_card.py` | Weekly statistics, snapshots, and exports. |
 | `notify.py`, `watcher.py`, `watch_service.py`, `scheduling.py` | Delivery, checks, process management, and scheduling. |
 | `config.py`, `i18n.py`, `locales/` | Configuration and English/Chinese messages. |
-| `runtime.py`, `install.sh`, `install.ps1` | Shared personal paths, installation diagnostics, and persistent terminal setup. |
+| `paths.py`, `runtime.py`, `install.sh`, `install.ps1` | Shared personal paths, installation diagnostics, and persistent terminal setup. |
 | `skill_install.py`, `skills/todogc/` | Offline skill installation, fixed runtime bindings, and shared agent guidance. |
 | `cli.py`, `webapp.py` | Terminal and optional browser interfaces. |
 

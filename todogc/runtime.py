@@ -82,35 +82,32 @@ def _file_path(value: str | Path, *, memory: bool = False) -> str:
 
 
 def _legacy_runtimes(env: Mapping[str, str]) -> list[dict[str, Any]]:
-    from todogc.skill_install import skill_directory
+    from todogc.paths import skill_directory
 
     candidates = []
     for target in ("codex", "claude-code"):
-        directory = (Path(env.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser().absolute()
-                     / "skills/todogc" if target == "claude-code" else skill_directory(target))
+        directory = skill_directory(target, environ=env)
         path = directory / "runtime.json"
         if directory.is_symlink():
             raise RuntimeConfigError(f"Refusing a symlink skill directory: {directory}")
         runtime = read_runtime(path)
-        if runtime is not None:
+        if (runtime is not None and isinstance(runtime.get("files"), dict)
+                and all(isinstance(value, str) for value in runtime["files"].values())):
             candidates.append(runtime)
     return candidates
 
 
-def resolve_paths(database: str | Path | None = None, config: str | Path | None = None, *,
-                  environ: Mapping[str, str] | None = None,
-                  previous: Mapping[str, Any] | None = None,
-                  inspect_skills: bool = True) -> RuntimePaths:
-    """CLI > environment > personal profile > old skill > legacy cwd > personal defaults.
-
-    Existing directory-local files are a compatibility fallback only until setup
-    registers a personal binding. Explicit paths always allow a different list.
-    """
+def resolve_path(value: str | Path | None, *, key: str,
+                 environ: Mapping[str, str] | None = None,
+                 previous: Mapping[str, Any] | None = None,
+                 inspect_skills: bool = True) -> str:
+    """Resolve one field independently, preserving existing shared data before cwd."""
     env = os.environ if environ is None else environ
-    chosen = {"database": database if database is not None else env.get("TODOGC_DB"),
-              "config": config if config is not None else env.get("TODOGC_CONFIG")}
+    variable, filename = (("TODOGC_DB", "todogc.db") if key == "database"
+                          else ("TODOGC_CONFIG", "todogc.toml"))
+    chosen = value if value is not None else env.get(variable)
     candidates: list[Mapping[str, Any]] = []
-    if any(value is None for value in chosen.values()):
+    if chosen is None:
         profile = read_runtime(_check_profile_path())
         if profile is not None:
             candidates = [profile]
@@ -118,17 +115,28 @@ def resolve_paths(database: str | Path | None = None, config: str | Path | None 
             candidates = [previous]
         elif inspect_skills:
             candidates = [*_legacy_runtimes(env)]
-    for key, filename in (("database", "todogc.db"), ("config", "todogc.toml")):
-        if chosen[key] is None:
-            values = {str(runtime[key]) for runtime in candidates}
-            if len(values) > 1:
-                option = "--db" if key == "database" else "--config"
-                raise RuntimeConfigError(f"Conflicting skill {key} bindings. Choose {option} explicitly and run setup.")
-            chosen[key] = next(iter(values)) if values else (
-                Path.cwd() / filename if (Path.cwd() / filename).is_file()
-                else Path.home() / ".todogc" / filename)
-    return RuntimePaths(_file_path(str(chosen["database"]), memory=True),
-                        _file_path(str(chosen["config"])))
+        values = {str(runtime[key]) for runtime in candidates}
+        if len(values) > 1:
+            option = "--db" if key == "database" else "--config"
+            raise RuntimeConfigError(f"Installed skills use different {key} paths; choose {option} explicitly and run setup.")
+        shared, local = Path.home() / ".todogc" / filename, Path.cwd() / filename
+        chosen = next(iter(values)) if values else (
+            local if not shared.is_file() and local.is_file() else shared)
+    return _file_path(chosen, memory=key == "database")
+
+
+def resolve_paths(database: str | Path | None = None, config: str | Path | None = None, *,
+                  environ: Mapping[str, str] | None = None,
+                  previous: Mapping[str, Any] | None = None,
+                  inspect_skills: bool = True) -> RuntimePaths:
+    """CLI > environment > personal profile > old skill > shared file > legacy cwd.
+
+    Personal paths remain the final default when no existing file is available.
+    Explicit paths always allow a different task list.
+    """
+    return RuntimePaths(
+        resolve_path(database, key="database", environ=environ, previous=previous, inspect_skills=inspect_skills),
+        resolve_path(config, key="config", environ=environ, previous=previous, inspect_skills=inspect_skills))
 
 
 def setup_runtime(database: str | None = None, config: str | None = None) -> dict[str, Any]:
