@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import venv
@@ -47,8 +48,20 @@ def smoke_wheel(wheel: Path) -> None:
         env.pop("CONDA_PREFIX", None)
 
         def run(*args: str, cwd: Path | None = None) -> str:
+            # Windows CreateProcess does not use env['PATH'] when resolving a
+            # bare executable with shell=False. Resolve the intended child PATH
+            # explicitly, so a runner's globally installed CLI cannot mask it.
+            if not Path(args[0]).is_absolute():
+                executable = shutil.which(args[0], path=env["PATH"])
+                if executable is None:
+                    raise ValueError(f"Command is missing from the isolated PATH: {args[0]}")
+                if args[0] == "todogc" and not Path(executable).samefile(cli):
+                    raise ValueError(f"Isolated PATH selected another TodoGC installation: {executable}")
+                args = (executable, *args[1:])
             result = subprocess.run(args, cwd=cwd or root, env=env, text=True, capture_output=True,
-                                    encoding="utf-8", check=True)
+                                    encoding="utf-8", check=False)
+            if result.returncode:
+                raise RuntimeError(f"Installed command failed: {args}\n{result.stdout}\n{result.stderr}")
             return result.stdout
 
         run(str(python), "-m", "pip", "install", "--no-index", "--no-deps", str(wheel))
