@@ -27,6 +27,7 @@ with (root / "calls.jsonl").open("a", encoding="utf-8") as log:
     log.write(json.dumps({"program": manager, "args": args, "cwd": os.getcwd(),
                           "venv": os.environ.get("VIRTUAL_ENV"),
                           "pythonpath": os.environ.get("PYTHONPATH"),
+                          "shell_markers": {key: os.environ[key] for key in ("NU_VERSION", "FISH_VERSION", "BASH_VERSION", "ZSH_VERSION", "KSH_VERSION", "PSModulePath") if key in os.environ},
                           "offline": os.environ.get("UV_OFFLINE"), "path": os.environ.get("PATH")}) + "\n")
 uv_root, pipx_root, bins = root / "uv tools", root / "pipx tools", root / "user bin"
 if manager == "uv" and args == ["tool", "dir"]:
@@ -271,6 +272,16 @@ def test_existing_shell_configuration_is_an_idempotent_success(sandbox):
     assert "Shell configuration already contains" in result.stdout
 
 
+def test_login_shell_is_not_overridden_by_inherited_agent_shell_markers(sandbox):
+    result = run_installer(sandbox, SHELL="/bin/bash", PSModulePath="PowerShell modules",
+                           NU_VERSION="inherited", FISH_VERSION="inherited", BASH_VERSION="inherited",
+                           ZSH_VERSION="inherited", KSH_VERSION="inherited")
+    assert result.returncode == 0, result.stderr
+    updates = [row for row in calls(sandbox) if row["args"] == ["tool", "update-shell"]]
+    assert len(updates) == 1
+    assert updates[0]["shell_markers"] == {}
+
+
 @pytest.mark.parametrize("component", ["$literal", "$(echo injected)", "`echo injected`", 'a"quote', "line\nbreak", "colon:directory", r"back\slash"])
 def test_unsafe_shell_persistence_paths_fail_before_profile_or_install_mutation(sandbox, component):
     unsafe = sandbox[0] / component
@@ -290,8 +301,39 @@ def test_powershell_unsafe_profile_paths_fail_before_any_installation(tmp_path, 
     pwsh = shutil.which("pwsh") or shutil.which("powershell")
     if not pwsh:
         pytest.skip("PowerShell is not installed")
-    environment = {**os.environ, "USERPROFILE": str(tmp_path / component)}
-    result = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-File", str(ROOT / "install.ps1"), "-Offline"],
+    # PowerShell itself reads USERPROFILE during initialization. In particular,
+    # a semicolon can make the host fail before the installer is ever invoked.
+    # Start with the valid inherited profile, then inject the hostile value only
+    # inside the initialized child process, as data rather than command text.
+    environment = {**os.environ, "TEST_UNSAFE_USERPROFILE": str(tmp_path / component),
+                   "TEST_PS_SCRIPT": str(ROOT / "install.ps1")}
+    script = r'''
+$ErrorActionPreference = 'Stop'
+$originalProfile = $env:USERPROFILE
+$beforeUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$beforeMachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+$rejected = $false
+try {
+    $env:USERPROFILE = $env:TEST_UNSAFE_USERPROFILE
+    try {
+        & $env:TEST_PS_SCRIPT -Offline
+    } catch {
+        if ($_.Exception.Message -notlike '*cannot safely represent*') { throw }
+        $rejected = $true
+    }
+} finally {
+    $env:USERPROFILE = $originalProfile
+}
+if (-not $rejected) { throw 'Installer accepted an unsafe USERPROFILE' }
+if ([Environment]::GetEnvironmentVariable('Path', 'User') -cne $beforeUserPath -or
+    [Environment]::GetEnvironmentVariable('Path', 'Machine') -cne $beforeMachinePath) {
+    throw 'Installer changed persistent PATH before rejecting the profile'
+}
+Write-Output 'Installer rejected unsafe USERPROFILE without changing persistent PATH'
+'''
+    before_files = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+    result = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-Command", script],
                             env=environment, capture_output=True, text=True)
-    assert result.returncode != 0
-    assert "cannot safely represent" in result.stdout + result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Installer rejected unsafe USERPROFILE without changing persistent PATH" in result.stdout
+    assert sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*")) == before_files

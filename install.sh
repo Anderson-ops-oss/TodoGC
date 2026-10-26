@@ -67,6 +67,13 @@ PATH=$clean_path
 export PATH
 unset VIRTUAL_ENV CONDA_PREFIX PYTHONHOME PYTHONPATH
 
+# Install for the user's login shell, not a shell used to launch an agent or CI
+# step. uv gives inherited shell markers (notably PSModulePath) priority over
+# SHELL; those markers can survive several subprocesses after that shell exits.
+if [ -n "${SHELL:-}" ]; then
+    unset NU_VERSION FISH_VERSION BASH_VERSION ZSH_VERSION KSH_VERSION PSModulePath
+fi
+
 uv_cmd=$(command -v uv 2>/dev/null || :)
 pipx_cmd=$(command -v pipx 2>/dev/null || :)
 if [ -z "$uv_cmd" ] && [ -x "$HOME/.local/bin/uv" ]; then uv_cmd=$HOME/.local/bin/uv; fi

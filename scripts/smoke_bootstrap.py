@@ -46,6 +46,7 @@ def smoke(wheel: Path) -> None:
                if not key.startswith(("UV_", "PIPX_", "TODOGC_", "XDG_"))
                and key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "CONDA_PREFIX", "BASH_ENV", "ENV", "ZDOTDIR"}}
         env.update(HOME=str(home), SHELL=user_shell, ZDOTDIR=str(home),
+                   PSModulePath="inherited PowerShell modules", NU_VERSION="inherited Nushell version",
                    UV_TOOL_DIR=str(root / "persistent tools"),
                    UV_TOOL_BIN_DIR=str(root / "user bin"),
                    UV_CACHE_DIR=str(root / "cache"), UV_OFFLINE="1",
@@ -79,7 +80,7 @@ def smoke(wheel: Path) -> None:
             raise ValueError("Installer touched an unrelated project database")
         if (home / "todogc.db").exists():
             raise ValueError("Installer created a working-directory database")
-    print("Native installer: actual offline wheel, spaces/shell characters, repeated install, fresh shell, shared CLI/skills database and doctor passed")
+    print("Native installer: actual offline wheel, inherited shell markers, repeated install, fresh shell, shared CLI/skills database and doctor passed")
 
 
 if __name__ == "__main__":
