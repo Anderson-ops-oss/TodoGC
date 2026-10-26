@@ -33,14 +33,22 @@ def smoke_wheel(wheel: Path) -> None:
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("TODOGC_") and key not in {"PYTHONPATH", "PYTHONHOME"}}
     with tempfile.TemporaryDirectory(prefix="todogc-wheel-") as directory:
-        root = Path(directory)
+        root = Path(directory).resolve()
+        home = root / "user home with spaces"
+        home.mkdir()
+        env.update(HOME=str(home), USERPROFILE=str(home), CLAUDE_CONFIG_DIR=str(home / ".claude"),
+                   PYTHONUTF8="1")
         venv.EnvBuilder(with_pip=True).create(root / "env")
         executable_dir = root / "env" / ("Scripts" if os.name == "nt" else "bin")
         python = executable_dir / ("python.exe" if os.name == "nt" else "python")
         cli = executable_dir / ("todogc.exe" if os.name == "nt" else "todogc")
+        env["PATH"] = str(executable_dir) + os.pathsep + os.environ.get("PATH", "")
+        env.pop("VIRTUAL_ENV", None)
+        env.pop("CONDA_PREFIX", None)
 
         def run(*args: str, cwd: Path | None = None) -> str:
-            result = subprocess.run(args, cwd=cwd or root, env=env, text=True, capture_output=True, check=True)
+            result = subprocess.run(args, cwd=cwd or root, env=env, text=True, capture_output=True,
+                                    encoding="utf-8", check=True)
             return result.stdout
 
         run(str(python), "-m", "pip", "install", "--no-index", "--no-deps", str(wheel))
@@ -48,8 +56,12 @@ def smoke_wheel(wheel: Path) -> None:
                                   "import json, todogc; print(json.dumps([todogc.__file__, todogc.__version__]))"))
         if not Path(installed[0]).is_relative_to(root / "env") or installed[1] != version:
             raise ValueError("Smoke test imported the checkout or an unexpected version")
-        run(str(cli), "--help")
-        run(str(cli), "add", "Release smoke test", "--root")
+        run("todogc", "--help")
+        profile = json.loads(run("todogc", "setup", "--json"))
+        database = Path(profile["database"])
+        if database != home / ".todogc" / "todogc.db" or database.exists():
+            raise ValueError("Setup did not bind a personal database without creating it")
+        run("todogc", "add", "Release smoke test", "--root")
         run(str(cli), "add", "Verify installed commands", "--root-id", "1")
         run(str(cli), "focus", "2")
         run(str(cli), "today")
@@ -65,10 +77,8 @@ def smoke_wheel(wheel: Path) -> None:
         (other_project / "todogc.toml").write_text("Invalid unrelated project configuration")
         (other_project / "todogc.db").write_bytes(b"Unrelated database")
         for platform in ("codex", "claude-code"):
-            directory = root / "installed skills" / platform
-            result = json.loads(run(str(cli), "--db", str(root / "todogc.db"),
-                                    "--config", str(root / "todogc.toml"), "skill", "install",
-                                    "--target", platform, "--directory", str(directory), "--json"))[0]
+            result = json.loads(run("todogc", "skill", "install", "--target", platform, "--json"))[0]
+            directory = Path(result["path"])
             if not result["up_to_date"]:
                 raise ValueError(f"Installed skill is not current: {platform}")
             runtime = json.loads((directory / "runtime.json").read_text())
@@ -78,9 +88,14 @@ def smoke_wheel(wheel: Path) -> None:
             run(*prefix, "capture", title, cwd=other_project)
             if title not in run(*prefix, "search", title, "--scope", "inbox", cwd=other_project):
                 raise ValueError(f"Installed skill could not use its bound runtime: {platform}")
+            if title not in run("todogc", "search", title, "--scope", "inbox", cwd=other_project):
+                raise ValueError(f"Terminal CLI did not share the skill's database: {platform}")
+        diagnostic = json.loads(run("todogc", "doctor", "--json", cwd=other_project))
+        if not diagnostic["ok"] or diagnostic["database"] != str(database):
+            raise ValueError(f"Installed runtime diagnostics failed: {diagnostic}")
         if (other_project / "todogc.db").read_bytes() != b"Unrelated database":
             raise ValueError("Skill command touched the wrong database")
-    print(f"todogc {version}: isolated pip install, CLI, and both installed skill runtimes passed")
+    print(f"todogc {version}: isolated install, command-name lookup outside checkout, shared data, both skills, and doctor passed")
 
 
 if __name__ == "__main__":

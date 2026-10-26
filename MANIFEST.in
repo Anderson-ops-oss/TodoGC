@@ -3,3 +3,7 @@ include README.zh.md
 include todogc.toml.example
 include docs/weekly-review-example.png
 include scripts/smoke_wheel.py
+include scripts/smoke_bootstrap.py
+include scripts/smoke_windows_installer.py
+include install.sh
+include install.ps1

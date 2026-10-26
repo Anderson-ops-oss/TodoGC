@@ -81,9 +81,62 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  installed-runtime:
+    name: Verify installed runtime on ${{ matrix.os }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@v6
+        with:
+          name: python-distributions
+          path: dist/
+      - name: Install the release wheel and test dependencies
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          wheels = list(Path("dist").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          subprocess.run([sys.executable, "-m", "pip", "install", "pytest", "uv", str(wheels[0])], check=True)
+      - run: python -m pytest tests/test_runtime_adversarial.py tests/test_bootstrap_installers.py
+      - name: Verify the release wheel outside the checkout
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          wheels = list(Path("dist").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          subprocess.run([sys.executable, "scripts/smoke_wheel.py", str(wheels[0])], check=True)
+      - name: Verify the platform installer with the release wheel and real uv
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          wheels = list(Path("dist").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          subprocess.run([sys.executable, "scripts/smoke_bootstrap.py", str(wheels[0])], check=True)
+
   publish:
     name: Publish distributions
-    needs: build
+    needs: [build, installed-runtime]
     if: >-
       github.event_name == 'release' &&
       !github.event.release.prerelease &&

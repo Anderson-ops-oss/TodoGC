@@ -20,9 +20,42 @@ jobs:
       - run: ruff check todogc tests scripts
       - run: basedpyright
       - run: pytest
-      - if: matrix.python-version == '3.13'
-        run: python -m build
-      - if: matrix.python-version == '3.13'
-        run: python -m twine check --strict dist/*
-      - if: matrix.python-version == '3.13'
-        run: python scripts/smoke_wheel.py dist/*.whl
+
+  installed-runtime:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pip install uv
+      - run: python -m pytest tests/test_runtime_adversarial.py tests/test_bootstrap_installers.py
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      - name: Verify the installed wheel outside the checkout
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          wheels = list(Path("dist").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          subprocess.run([sys.executable, "scripts/smoke_wheel.py", str(wheels[0])], check=True)
+      - name: Verify the platform installer with a real offline uv installation
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          wheels = list(Path("dist").glob("*.whl"))
+          assert len(wheels) == 1, wheels
+          subprocess.run([sys.executable, "scripts/smoke_bootstrap.py", str(wheels[0])], check=True)
